@@ -312,6 +312,7 @@ void SettingsActivity::toggleCurrentSetting() {
     const uint8_t totalValues = setting.enumStringValues.empty()
                                     ? static_cast<uint8_t>(setting.enumLabels().size())
                                     : static_cast<uint8_t>(setting.enumStringValues.size());
+    if (totalValues == 0) return;
     const uint8_t cur = setting.valueGetter();
     if (totalValues > 2) {
       const auto valueSetter = setting.valueSetter;
@@ -322,7 +323,7 @@ void SettingsActivity::toggleCurrentSetting() {
         rebuildSettingsLists();
       };
       if (!setting.enumStringValues.empty()) {
-        optionPopup.show(setting.nameId, setting.enumStringValues, cur, std::move(onSelect));
+        optionPopup.show(setting.nameId, setting.enumStringValues, cur < totalValues ? cur : 0, std::move(onSelect));
       } else {
         const auto enumLabels = setting.enumLabels();
         optionPopup.show(setting.nameId, enumLabels.data(), static_cast<int>(enumLabels.size()), cur,
@@ -510,6 +511,9 @@ std::string SettingsActivity::settingValueText(const SettingInfo& setting) {
     return I18N.get(enumLabels[value]);
   }
   if (setting.type == SettingType::ENUM && setting.valueGetter) {
+    if (setting.nameId == StrId::STR_FONT_FAMILY && SETTINGS.sdFontFamilyName[0] == '\0') {
+      return tr(STR_NOT_SET);
+    }
     const uint8_t value = setting.valueGetter();
     if (!setting.enumStringValues.empty() && value < setting.enumStringValues.size()) {
       return setting.enumStringValues[value];

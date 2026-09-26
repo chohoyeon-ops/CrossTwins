@@ -22,13 +22,6 @@ class SdCardFontManager {
   // one size's worth of memory. Returns true on success.
   bool loadFamily(const SdCardFontFamilyInfo& family, GfxRenderer& renderer, uint8_t pointSize);
 
-  // Additively load the .cpfont of `family` at the exact physical `pointSize`
-  // (used for size-matched CJK UI fallback alongside the reader-size font).
-  // Does not unload anything. If a font of that size is already loaded its id
-  // is reused. Returns the font id, or 0 if the family has no file at that size
-  // or loading failed.
-  int loadFamilyExtraSize(const SdCardFontFamilyInfo& family, GfxRenderer& renderer, uint8_t pointSize);
-
   // Unload everything, unregister from renderer.
   void unloadAll(GfxRenderer& renderer);
 
@@ -47,7 +40,6 @@ class SdCardFontManager {
   struct LoadedFont {
     SdCardFont* font;  // heap-allocated, owned
     int fontId;
-    uint8_t size;
   };
   static int computeFontId(uint32_t contentHash, const char* familyName, uint8_t pointSize);
 

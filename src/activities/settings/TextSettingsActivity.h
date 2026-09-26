@@ -85,8 +85,6 @@ class TextSettingsActivity final : public UiTabListActivity {
 
   struct FontEntry {
     std::string name;
-    bool isBuiltin;
-    uint8_t settingIndex;
   };
 
   struct SizeEntry {

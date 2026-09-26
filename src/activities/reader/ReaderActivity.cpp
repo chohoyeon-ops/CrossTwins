@@ -3,6 +3,7 @@
 #include <FontCacheManager.h>
 #include <FsHelpers.h>
 #include <HalStorage.h>
+#include <I18n.h>
 #include <Memory.h>
 
 #include <algorithm>
@@ -61,6 +62,11 @@ void ReaderActivity::onEnter() {
   }
 
   sdFontSystem.ensureLoaded(renderer);
+  if (!FsHelpers::hasXtcExtension(bookPath) && SETTINGS.getReaderFontId() == 0) {
+    LOG_ERR("READER", "Selected SD reader font is unavailable");
+    activityManager.goToFullScreenMessage(tr(STR_NO_FONTS_AVAILABLE));
+    return;
+  }
   applyInitialOrientation();
 
   if (!loadBook()) {

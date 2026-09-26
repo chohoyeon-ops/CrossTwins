@@ -105,7 +105,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     SIDE_BUTTON_LAYOUT_COUNT
   };
 
-  // Font family options (built-in fonts only; SD card fonts use sdFontFamilyName)
+  // Legacy reader font family values retained for stored settings migration.
   enum FONT_FAMILY { NOTOSERIF = 0, NOTOSANS = 1, FONT_FAMILY_COUNT };
   static constexpr uint8_t LEGACY_OPENDYSLEXIC = 2;
   static constexpr uint8_t BUILTIN_FONT_COUNT = FONT_FAMILY_COUNT;
@@ -330,7 +330,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // Focus Reading - emphasizes the first part of words with bold
   uint8_t focusReadingEnabled = 0;
   uint8_t readerMenuStyle = READER_MENU_LIST;
-  // SD card font family name (empty = use built-in fontFamily)
+  // SD card reader font family name (empty = no reader font selected)
   char sdFontFamilyName[32] = "";
   // Dictionary folder name under /dictionaries (empty = no dictionary)
   char dictionaryName[32] = "";
@@ -392,10 +392,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   }
   int getReaderFontId() const;
 
-  // Drop the SD font selection and fall back to the built-in family. The reader
-  // point size comes back into BUILTIN_READER_POINT_SIZES with it, since that is
-  // the only set a built-in family ships — otherwise the settings UI would keep
-  // offering a size nothing renders at. Both fields are persisted in one write.
+  // Drop the unavailable SD font selection. No reader font is available until
+  // another SD family is selected.
   void clearSdFontFamily();
 
   // Resolved status-bar composition. Consumers read the spec; only settings

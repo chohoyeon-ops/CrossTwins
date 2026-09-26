@@ -78,7 +78,10 @@ void renderPreview(const GfxRenderer& renderer, PreviewLayout& layout, int previ
   renderer.drawText(UI_10_FONT_ID, left, labelY, labelBuf);
 
   const int fontId = SETTINGS.getReaderFontId();
-  if (fontId == 0) return;
+  if (fontId == 0) {
+    renderer.drawText(UI_10_FONT_ID, left, top + previewPadding, tr(STR_NO_FONTS_AVAILABLE));
+    return;
+  }
 
   const int lineH = renderer.getTextHeight(fontId);
   if (lineH <= 0) return;
