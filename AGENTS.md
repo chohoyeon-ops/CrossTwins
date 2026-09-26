@@ -1,46 +1,61 @@
 # CrossPoint Reader Development Guide
 
-Project: Open-source e-reader firmware for Xteink X4 (ESP32-C3)
-Mission: Provide a lightweight, high-performance reading experience focused on EPUB rendering on constrained hardware.
+Project: Personal experimental Korean-focused fork of CrossPoint for the owner's
+XTEINK X3/X4 reading workflow. The repository also retains other board
+configurations in `platformio.ini`.
+Mission: A stable EPUB reader on constrained hardware, using SD storage for books and reader fonts.
+
+## Repository Purpose and Scope
+
+This is a personal fork, not an upstream compatibility branch. Use upstream code
+as a reference, not as an immutable requirement. Prefer the simplest
+implementation that matches the supported hardware and workflow. Do not retain
+an upstream fallback, compatibility layer, or large asset solely because
+upstream has it.
+
+Before preserving one, determine:
+
+1. Is it reachable during the supported operating state of this fork?
+2. Does the actual X3/X4 hardware and workflow require it?
+3. Would removing it save meaningful Flash/RAM or simplify the implementation?
+4. Is this task explicitly intended for future upstream submission?
+
+Scope upstream-targeted changes separately and preserve upstream requirements
+for those changes unless instructed otherwise.
+
+Normal operation requires an inserted SD card. Books are stored and read there,
+and reader/body fonts, including Korean/CJK fonts such as Ridibatang, are loaded
+from there. Removing or omitting the SD card makes normal book and font I/O
+unsupported. Internal Flash does not need a complete reader-font fallback for
+that state. Do not retain large built-in assets to support SD-less reading
+unless the task explicitly requires it.
 
 ## AI Agent Identity and Cognitive Rules
 
 * Role: Senior Embedded Systems Engineer (ESP-IDF/Arduino-ESP32 specialized).
-* Primary Constraint: 380KB RAM is the hard ceiling. Stability is non-negotiable.
+* Primary Constraint: ESP32-C3 RAM is tightly constrained and has no PSRAM. Stability is non-negotiable; verify actual build and runtime memory figures rather than assuming a fixed free-heap budget.
 * Evidence-Based Reasoning: Before proposing a change, you MUST cite the specific file path and line numbers that justify the modification.
 * Anti-Hallucination: Do not assume the existence of libraries or ESP-IDF functions. If you are unsure of an API's availability for the ESP32-C3 RISC-V target, check the freeink-sdk source or the FreeInk SDK docs (https://freeink.org/llms.txt for an LLM-readable index) first.
 * No Unfounded Claims: Do not claim performance gains or memory savings without explaining the technical mechanism (e.g., DRAM vs IRAM usage).
 * Resource Justification: You must justify any new heap allocation (new, malloc, std::vector) or explain why a stack/static alternative was rejected.
 * Verification: After suggesting a fix, instruct the user on how to verify it (e.g., monitoring heap via Serial or checking a specific cache file).
+* Decision Authority: Resolve routine implementation details independently only when they do not expand the requested behavior, touched subsystem, or externally observable result beyond what is necessary to complete the task. If requirements conflict, multiple interpretations would materially change observable behavior, or proceeding requires expanding the requested scope, stop and present the conflicting facts and available choices instead of silently choosing product behavior. Example: if locale parity requirements conflict with preserving an existing translation set, surface the conflict rather than silently adding or omitting translations.
+* Scope Discipline: Stay within the implementation scope requested by the user. Report useful out-of-scope findings separately; do not implement them without explicit approval. This includes unrelated bug fixes, cleanup, refactoring, and "obvious" improvements discovered while working.
+* Documentation Authority: This file is operational guidance, not authority over the current source tree. When a task materially depends on a concrete path, API name, version number, build flag, cache format, or architectural claim stated here, verify it against the current repository. If this document conflicts with verified implementation, follow the implementation and report the documentation drift. Example: cache invalidation documentation has previously disagreed with the actual path-derived cache key, so concrete cache claims must be checked against source.
 
 ---
 
-## Development Environment Awareness
+## Development Environment
 
-**CRITICAL**: Detect the host platform at session start to choose appropriate tools and commands.
+This development machine runs Windows. Use PowerShell for ordinary repository, PlatformIO, Python, and file operations. Check the current branch, remotes, and working-tree status before Git work; do not require `uname -s` or use Git Bash as the normal shell.
 
-### Platform Detection
+The sanctioned formatting entry point is the repository's Bash wrapper. Invoke it from PowerShell through Git for Windows Bash, with clang-format 21 or newer available to that Bash process:
 
-```bash
-# Detect platform (run once per session)
-uname -s
-# Returns: MINGW64_NT-* (Windows Git Bash), Linux, Darwin (macOS)
+```powershell
+& "C:\Program Files\Git\bin\bash.exe" -c 'export PATH=/c/Codex/.build-tools/venv/Lib/site-packages/clang_format/data/bin:/usr/bin:$PATH; ./bin/clang-format-fix -g'
 ```
 
-**Detection Required**: Run `uname -s` at session start to determine platform
-
-### Platform-Specific Behaviors
-
-- **Windows (Git Bash)**: Unix commands, `C:\` paths in Windows but `/` in bash, limited glob (use `find`+`xargs`)
-- **Linux/WSL**: Full bash, Unix paths, native glob support
-
-**Cross-Platform Code Formatting**:
-
-```bash
-./bin/clang-format-fix -g
-```
-
-Never invoke or probe `clang-format` directly. The repository wrapper is the only sanctioned entry point.
+Never invoke or probe `clang-format` directly; use the wrapper even for diagnostics. If its dependencies are unavailable, report that condition rather than replacing the repository mechanism.
 
 ---
 
@@ -48,14 +63,14 @@ Never invoke or probe `clang-format` directly. The repository wrapper is the onl
 
 ### Hardware Specs
 
-* MCUs: ESP32-C3 (single-core RISC-V @ 160MHz) and ESP32-S3 (`sticky`, dual-core Xtensa LX7)
-* RAM: ~380KB usable on ESP32-C3 (VERY LIMITED - primary project constraint)
+* MCUs: The `default` environment targets ESP32-C3; `platformio.ini` also defines ESP32-S3 environments such as `sticky` and `x4pro`. Verify the selected environment before applying board-specific assumptions.
+* RAM: ESP32-C3 memory is limited; use build reports and live heap measurements for the selected board.
   * **NO PSRAM on C3**.
-  * **Single Buffer Mode**: Only ONE 48KB framebuffer (not double-buffered)
-* Flash: 16MB (Instruction storage and static data)
-* Display: 800x480 E-Ink (Slow refresh, monochrome, 1-2s full update)
+  * **Single Buffer Mode**: Only ONE 48KB framebuffer for an 800x480 monochrome display (not double-buffered)
+* Flash: The default board configuration specifies 16MB.
+* Display: The X4 path uses an 800x480 E-Ink panel; use orientation-aware renderer dimensions in code.
   * Framebuffer: 48,000 bytes (800 × 480 ÷ 8)
-* Storage: SD Card (Used for books and aggressive caching)
+* Storage: SD card is required for normal book, reader-font, and cache I/O.
 
 ### The Resource Protocol
 
@@ -75,7 +90,7 @@ Never invoke or probe `clang-format` directly. The repository wrapper is the onl
 
 ### Build System: PlatformIO
 
-**PlatformIO is BOTH a VS Code extension AND a CLI tool**:
+PlatformIO is available through the VS Code extension or its CLI. Use PowerShell for CLI work on this machine.
 
 1. **VS Code Extension** (Recommended):
    
@@ -91,11 +106,8 @@ Never invoke or probe `clang-format` directly. The repository wrapper is the onl
    
    * **Installation**: Python package (typically `pip install platformio`)
    
-   * **Windows Location**: `C:\Users\<user>\AppData\Local\Programs\Python\Python3xx\Scripts\pio.exe`
-   
-   * **Verify**: `which pio` (Git Bash) or `where.exe pio` (cmd)
-   
-   * **Usage**: `pio run`, `pio run -t upload`, etc.
+   * **Discover**: `Get-Command pio -ErrorAction SilentlyContinue` in PowerShell. On this development machine, `C:\Codex\.platformio-clean\venv\Scripts\pio.exe` is also available.
+   * **Usage**: `& "C:\Codex\.platformio-clean\venv\Scripts\pio.exe" run -e default` (or `pio run -e default` if on PATH).
 
 **Configuration Files**:
 
@@ -105,7 +117,7 @@ Never invoke or probe `clang-format` directly. The repository wrapper is the onl
 
 ### Build Environment
 
-* **Standard**: C++20 (`-std=c++2a`). No Exceptions, No RTTI.
+* **Standard**: `-std=gnu++2a` in `platformio.ini`. No Exceptions, No RTTI.
 * **Logging**: ALWAYS use `LOG_INF`, `LOG_DBG`, or `LOG_ERR` from `Logging.h`. Raw Serial output is deprecated.
 * **Environments** (in `platformio.ini`):
   * `default`: Development (LOG_LEVEL=2, serial enabled)
@@ -123,7 +135,6 @@ These flags in `platformio.ini` fundamentally affect firmware behavior:
 -DARDUINO_USB_CDC_ON_BOOT=1          // Serial available immediately at boot
 -DXML_CONTEXT_BYTES=1024             // XML parser memory limit (EPUB parsing)
 -DUSE_UTF8_LONG_NAMES=1              // SD card long filename support
--DMINIZ_NO_ZLIB_COMPATIBLE_NAMES=1   // Avoid zlib name conflicts
 -DXML_GE=0                           // Disable XML general entities (security)
 -DDESTRUCTOR_CLOSES_FILE=1           // FsFile destructor auto-closes (SdFat)
 ```
@@ -360,45 +371,6 @@ sdkApiThatTakesOwnership(buffer, bufferSize);  // SDK calls free() / delete[]
 - Cover image buffers: [HomeActivity.cpp:166](src/activities/home/HomeActivity.cpp)
 - Bitmap rendering: [GfxRenderer.cpp:439-440](lib/GfxRenderer/GfxRenderer.cpp)
 
-### Heap Allocation with `new`: Always Use `makeUniqueNoThrow`
-
-**CRITICAL**: With `-fno-exceptions`, bare `new` on OOM calls `abort()` — it does NOT return `nullptr`. Always use `makeUniqueNoThrow` from `lib/Memory/Memory.h`, which wraps `new (std::nothrow)` and returns a `std::unique_ptr` that is null on OOM and automatically frees on scope exit.
-
-**Preferred pattern**:
-
-```cpp
-#include <Memory.h>
-
-auto obj = makeUniqueNoThrow<MyClass>(args);
-if (!obj) { LOG_ERR("MOD", "OOM: MyClass"); return false; }
-
-auto buf = makeUniqueNoThrow<uint8_t[]>(size);
-if (!buf) { LOG_ERR("MOD", "OOM: %d bytes", size); return false; }
-
-// Pass to C APIs via .get(); unique_ptr frees automatically on return
-someApi(buf.get(), size);
-```
-
-**`new (std::nothrow)` directly is acceptable** when the object must be passed to a C API that takes ownership and calls `delete` itself:
-
-```cpp
-auto* obj = new (std::nothrow) MyClass(args);
-if (!obj) { LOG_ERR("MOD", "OOM: MyClass"); return false; }
-sdkApiThatTakesOwnership(obj);  // SDK calls delete
-```
-
-**Rules**:
-
-- **Prefer `makeUniqueNoThrow`** — automatic cleanup eliminates leak risk on error paths
-- **NEVER use bare `new`** — always `makeUniqueNoThrow` or `new (std::nothrow)`
-- **ALWAYS `LOG_ERR` before returning false** on OOM
-- **Use `.get()`** to pass the raw pointer to C-style APIs; ownership stays with the `unique_ptr`
-- **`new (std::nothrow)` directly only** when a C API takes ownership; document why in a comment
-
-**Examples in codebase**:
-
-- Memory utilities: [Memory.h](lib/Memory/Memory.h) (`makeUniqueNoThrow`)
-
 ---
 
 ## UI and Orientation Guidelines
@@ -449,8 +421,7 @@ Constraint: Physical button positions are fixed on hardware, but their logical f
 
 ### UITheme (The GUI Macro)
 
-* Rule: All UI rendering must go through the GUI macro (UITheme). 
-* Do not hardcode fonts, colors, or positioning. This ensures orientation-aware layout consistency.
+* Use `GUI`/`UITheme` for shared chrome, theme metrics, and orientation-aware layout. Components that draw directly through `GfxRenderer` (for example, Reader Options preview) use the registered UI font IDs and renderer dimensions; do not invent unrelated hardcoded font IDs or screen geometry.
 
 ---
 
@@ -470,40 +441,16 @@ Constraint: Physical button positions are fixed on hardware, but their logical f
 
 ### Activity Lifecycle and Memory Management
 
-**Source**: [src/main.cpp:132-143](src/main.cpp)
+**Source**: [src/activities/ActivityManager.h](src/activities/ActivityManager.h), [src/activities/ActivityManager.cpp](src/activities/ActivityManager.cpp)
 
-**CRITICAL**: Activities are **heap-allocated** and **deleted on exit**.
-
-```cpp
-// main.cpp navigation pattern
-void exitActivity() {
-  if (currentActivity) {
-    currentActivity->onExit();
-    delete currentActivity;  // Activity deleted here!
-    currentActivity = nullptr;
-  }
-}
-
-void enterNewActivity(Activity* activity) {
-  currentActivity = activity;  // Heap-allocated activity
-  currentActivity->onEnter();
-}
-```
+`ActivityManager` owns the current, pending, and stacked activities with `std::unique_ptr`. Replacement and push/pop actions are deferred while an activity is active. On exit, the manager calls `onExit()` and resets the owned pointer; do not describe navigation as raw `new`/`delete` in `main.cpp`.
 
 **Memory Implications**:
 
-- Activity navigation = `delete` old activity + `new` create next activity
+- Activity transitions release or retain the manager-owned activity according to replace or push/pop semantics.
 - Any memory allocated in `onEnter()` MUST be freed in `onExit()`
 - FreeRTOS tasks MUST be deleted in `onExit()` before activity destruction
 - Member `FsFile` handles MUST be closed in `onExit()` (local `FsFile` variables auto-close via destructor)
-
-**Activity Pattern**:
-
-```cpp
-void onEnter()  { Activity::onEnter(); /* alloc: buffer, tasks */ render(); }
-void loop()     { mappedInput.update(); /* handle input */ }
-void onExit()   { /* free: vTaskDelete, free buffer, close member FsFiles */ Activity::onExit(); }
-```
 
 **Critical**: Free resources in reverse order. Delete tasks BEFORE activity destruction.
 
@@ -521,92 +468,23 @@ void onExit()   { /* free: vTaskDelete, free buffer, close member FsFiles */ Act
 
 **Rules**: Always `vTaskDelete()` in `onExit()` before destruction. Use mutex if shared state.
 
-### Global Font Loading
+### Font Storage and Registration
 
-**Source**: [src/main.cpp:40-115](src/main.cpp)
+Internal Flash contains firmware, required runtime assets, and Pretendard-based UI subsets. SD storage contains books and reader/body fonts, including Korean/CJK reading fonts. Do not restore built-in Noto Serif/Sans reader families or Ubuntu UI families for upstream compatibility alone.
 
-**All fonts are loaded as global static objects** at firmware startup:
+The compiled built-in font headers listed in [lib/EpdFont/builtinFonts/all.h](lib/EpdFont/builtinFonts/all.h) are Pretendard 8pt Regular, 10pt Regular/Bold, 12pt Regular/Bold, and 18pt Bold. [src/main.cpp](src/main.cpp) registers them as `SMALL_FONT_ID`, `UI_10_FONT_ID`, `UI_12_FONT_ID`, and `UI_18_FONT_ID`. The 18pt family is used by `UiSliderDialog`; keep only styles required by actual UI call sites. These are 1-bit built-in assets, with content-hash IDs generated in [src/fontIds.h](src/fontIds.h).
 
-- Noto Serif: 12, 14, 16, 18pt (4 styles each: regular, bold, italic, bold-italic)
-- Noto Sans: 12, 14, 16, 18pt (4 styles each)
-- Ubuntu UI fonts: 10, 12pt (2 styles)
+[src/SdCardFontSystem.cpp](src/SdCardFontSystem.cpp) discovers and loads selected SD reader fonts. `CrossPointSettings::getReaderFontId()` returns the selected SD font ID or `0` if unavailable; it does not substitute a built-in reader family. Reader Options previews the selected SD font and size; text reader entry guards an unavailable font. A missing or removed SD card is an error state, not a reason to bundle a large Flash reader-font fallback.
 
-**Total**: ~80+ global `EpdFont` and `EpdFontFamily` objects
+Distinguish these asset roles before removing fonts:
 
-**Compilation Flag**:
-
-```cpp
-#ifndef OMIT_FONTS
-  // Most fonts loaded here
-#endif
-```
-
-**Implications**:
-
-- Fonts stored in **Flash** (marked as `static const` in `lib/EpdFont/builtinFonts/`)
-- Font rendering data cached in **DRAM** when first used
-- `OMIT_FONTS` can reduce binary size for minimal builds
-- Font IDs defined in [src/fontIds.h](src/fontIds.h)
-
-**Usage**:
-
-```cpp
-#include "fontIds.h"
-
-renderer.insertFont(FONT_UI_MEDIUM, ui12FontFamily);
-renderer.drawText(FONT_UI_MEDIUM, x, y, "Hello", true);
-```
+- **Generated runtime headers** in `lib/EpdFont/builtinFonts/` consume firmware Flash when included and registered.
+- **Generation sources** in `lib/EpdFont/builtinFonts/source/` are inputs to scripts; source files are not themselves compiled built-in font families. Noto Sans and Noto Serif source files still serve SD-font and other generation tools.
+- **Supplemental sources and licenses** remain where required: NotoSansHebrew, NotoSansArabic, and Ubuntu-Vietnamese faces contribute glyphs to the Pretendard UI headers. Do not delete a source face or its license merely because a similarly named runtime family was removed.
 
 ---
 
 ## Testing and Debugging
-
-### Build Commands
-
-**Via CLI**:
-
-```bash
-# Build firmware (default environment)
-pio run
-
-# Build and upload to device
-pio run -t upload
-
-# Build specific environment
-pio run -e gh_release
-
-# Clean build artifacts
-pio run -t clean
-```
-
-**Via VS Code**:
-
-* Use PlatformIO toolbar: Build (✓), Upload (→), Clean (🗑️)
-* Or Command Palette: `PlatformIO: Build`, `PlatformIO: Upload`, etc.
-
-### Monitoring and Debugging
-
-```bash
-# Enhanced monitor with color/logging (recommended)
-python3 scripts/debugging_monitor.py
-
-# Standard PlatformIO monitor
-pio device monitor
-```
-
-**Via VS Code**: Click Monitor (🔌) button in PlatformIO toolbar
-
-### Code Quality
-
-```bash
-# Static analysis (cppcheck)
-pio check
-
-# Format only Git-modified C/C++ files, on every host
-./bin/clang-format-fix -g
-```
-
-Do not run raw `clang-format` or probe it with `command -v`; use the wrapper even for diagnostics.
 
 ### Debugging Crashes
 
@@ -681,7 +559,7 @@ Do not run raw `clang-format` or probe it with `command -v`; use the wrapper eve
 
 **Verification Commands** (run at session start):
 
-```bash
+```powershell
 # Check current branch
 git branch --show-current
 
@@ -692,20 +570,20 @@ git remote -v
 git status --short
 ```
 
-**Example Output** (forked repository):
+**Current remote roles** (verify again before use):
 
 ```text
-origin      https://github.com/<your-username>/crosspoint-reader.git (fetch/push)
+origin      https://github.com/chohoyeon-ops/crosspoint-reader-Korean.git (fetch/push)
 upstream    https://github.com/crosspoint-reader/crosspoint-reader.git (fetch/push)
 ```
 
 ### Git Operation Rules
 
-1. Integration branches and PR comparisons target `develop`, not `master` or the remote's symbolic HEAD.
+1. Personal-fork work follows the requested branch and comparison base. For changes explicitly intended for upstream PRs, compare against upstream `develop`, not `master` or a remote's symbolic HEAD.
 2. Never push to any remote or open/close a PR without explicit user approval. Complete local work and any requested local commit, then stop.
-3. If the user explicitly approves a push, inspect remotes again and use `fork` for the feature branch unless the user specifies otherwise.
+3. If the user explicitly approves a push, inspect remotes again and use the specified personal-fork remote/branch. Never infer a remote named `fork` exists.
 4. Never add Claude, Codex, or assistant self-attribution as a commit co-author or generated-by trailer.
-5. When a change supersedes or adapts another person's PR, verify the original human author from Git/GitHub and add that person as `Co-Authored-By`; skip bot authors.
+5. For upstream-targeted work that adapts another person's PR, verify the original human author before adding `Co-Authored-By`; skip bot authors.
 
 ### Branch Naming Convention
 
@@ -749,23 +627,7 @@ Tested in all 4 orientations with 5MB+ files.
 
 ### When to Commit
 
-**DO commit when**:
-
-- User explicitly requests: "commit these changes"
-- Feature is complete and tested on device
-- Bug fix is verified working
-- Refactoring preserves all functionality
-- All tests pass (`pio run` succeeds)
-
-**DO NOT commit when**:
-
-- Changes are untested on actual hardware
-- Build fails or has warnings
-- Experimenting or debugging in progress
-- User hasn't explicitly requested commit
-- Files excluded by `.gitignore` would be included — always run `git status` and cross-check against `.gitignore` before staging (e.g., `*.generated.h`, `.pio/`, `compile_commands.json`, `platformio.local.ini`)
-
-**Rule**: **If uncertain, ASK before committing.**
+Commit only when explicitly requested. Before staging, check `git status`, relevant build/check results, and `.gitignore`; exclude generated files that are ignored (such as `*.generated.h` and `.pio/`) and local configuration (`platformio.local.ini`). Report untested hardware behavior accurately in any requested commit or handoff. Never push or open a PR without separate explicit approval.
 
 ---
 
@@ -791,11 +653,18 @@ Tested in all 4 orientations with 5MB+ files.
    
    - **Source**: YAML translation files in `lib/I18n/translations/` (one per language)
    
-   - **To modify**: Edit source YAML files, then run `python scripts/gen_i18n.py lib/I18n/translations lib/I18n/`
+   - **To modify**: Edit source YAML files, then run the generator with the available Python interpreter (on this machine, `C:\Codex\.platformio-clean\venv\Scripts\python.exe`).
    
    - **Commit**: Source YAML files only. All three generated files (`I18nKeys.h`, `I18nStrings.h`, `I18nStrings.cpp`) are in `.gitignore` and regenerated at build time.
 
-3. **Build Artifacts** (in `.gitignore`):
+3. **Built-in UI font headers and IDs**:
+
+   - Runtime headers: `lib/EpdFont/builtinFonts/pretendard_*.h`, included through `builtinFonts/all.h` and registered in `src/main.cpp`
+   - Sources: `lib/EpdFont/builtinFonts/source/Pretendard/`, supplemental source faces under `source/NotoSansHebrew/`, `source/NotoSansArabic/`, and `source/Ubuntu/`, plus `lib/I18n/translations/korean.yaml`
+   - Generation: `lib/EpdFont/scripts/convert-builtin-fonts.sh` runs `fontconvert.py` and `generate-ui-korean-charset.py`; `build-font-ids.sh` calls `build-font-ids.py` to hash the resulting headers into `src/fontIds.h`
+   - The Pretendard headers and `src/fontIds.h` are required firmware inputs; inspect `git status` because newly generated headers may still be untracked. Regenerate them from sources rather than editing their contents by hand. Preserve required source licenses.
+
+4. **Build Artifacts** (in `.gitignore`):
    
    - `.pio/` - PlatformIO build output
    
@@ -819,7 +688,7 @@ Tested in all 4 orientations with 5MB+ files.
 1. Edit or add YAML file: `lib/I18n/translations/<language>.yaml`
    - Each file must contain: `_language_name`, `_language_code`, `_order`, `_bcp47`, and `STR_*` keys
    - English (`english.yaml`) is the reference; missing keys in other languages fall back to English
-2. Run generator: `python scripts/gen_i18n.py lib/I18n/translations lib/I18n/`
+2. Run from PowerShell: `& "C:\Codex\.platformio-clean\venv\Scripts\python.exe" scripts/gen_i18n.py lib/I18n/translations lib/I18n/`
 3. Generated files update: `I18nKeys.h`, `I18nStrings.h`, `I18nStrings.cpp`
 4. **Commit** source YAML files only. All three generated files are in `.gitignore` and regenerated at build time.
 
@@ -827,16 +696,12 @@ Tested in all 4 orientations with 5MB+ files.
 
 ```cpp
 #include <I18n.h>
+#include "fontIds.h"
 // Use tr() macro with StrId enum (defined in generated I18nKeys.h)
-renderer.drawText(FONT_UI, x, y, tr(STR_LOADING), true);
+renderer.drawText(UI_10_FONT_ID, x, y, tr(STR_LOADING), true);
 ```
 
-**To add custom fonts**:
-
-1. Place source fonts in `lib/EpdFont/fontsrc/` (gitignored)
-2. Run conversion script (see `lib/EpdFont/README`)
-3. Update global font objects in `src/main.cpp:40-115`
-4. Add font ID constant to `src/fontIds.h`
+**To change built-in UI fonts**: Update the source faces or generation inputs, run `lib/EpdFont/scripts/convert-builtin-fonts.sh`, regenerate `src/fontIds.h` using `lib/EpdFont/scripts/build-font-ids.sh`, then update `builtinFonts/all.h` and the registration in `src/main.cpp` if the family mapping changed. The built-in path is for UI assets; reader/body fonts belong on SD. Check each source face and license before cleanup.
 
 ---
 
@@ -883,12 +748,25 @@ build_flags =
 
 ## Testing and Verification Workflow
 
+### PowerShell Commands
+
+```powershell
+$pio = "C:\Codex\.platformio-clean\venv\Scripts\pio.exe"
+& $pio run -e default
+& $pio check -e default
+& $pio device list
+```
+
+Use the appropriate environment from `platformio.ini`; upload and monitor only when the task calls for device work. The VS Code PlatformIO extension is another option. For C/C++ formatting, use the repository wrapper through PowerShell as shown under Development Environment. Never run the wrapper as part of documentation-only work.
+
 ### Testing Checklist
+
+Report each applicable verification item as **PASS**, **FAIL**, or **NOT RUN**. Never report a check as passed unless it was actually run and its result was inspected. A successful build does not imply hardware validation. If a required check cannot be run, state why and leave it explicitly unverified.
 
 **AI agent scope** (what you CAN verify):
 
-1. ✅ **Build**: Build once after the last code edit with the relevant `pio run` target. Do not clean by default, repeat a target that already passed, or rebuild after formatting/comment-only/documentation-only changes.
-2. ✅ **Quality**: `pio check` when relevant + `./bin/clang-format-fix -g`
+1. ✅ **Build**: Build once after the last code edit with the relevant PlatformIO environment. Do not clean by default or rebuild for documentation-only changes.
+2. ✅ **Quality**: Run `pio check` when relevant and the repository formatting wrapper for changed C/C++ files.
 3. ✅ **Format**: Commit messages (`feat:`/`fix:`), no `.gitignore`-excluded files staged (e.g., `*.generated.h`, `.pio/`, `platformio.local.ini`)
 4. ✅ **CI**: Fix GitHub Actions failures before review
 5. ✅ **Code review**: Ensure orientation-aware logic is correct in all 4 modes by inspecting switch/case coverage
@@ -914,7 +792,7 @@ build_flags =
 
 - **Fix CI failures BEFORE** requesting review
 - CI runs on: Push to PR, PR updates
-- Format check fails → Run `./bin/clang-format-fix -g`
+- Format check fails → invoke the sanctioned wrapper through PowerShell as shown under Development Environment.
 - Build check fails → Fix compile errors
 
 ---
@@ -923,9 +801,9 @@ build_flags =
 
 ### Serial Monitor Options
 
-1. **Enhanced**: `python3 scripts/debugging_monitor.py` (color-coded, recommended)
-2. **Standard**: `pio device monitor` (basic, no colors)
-3. **VS Code**: Monitor (🔌) button (IDE-integrated)
+1. **Enhanced**: run `scripts/debugging_monitor.py` with the available Python interpreter.
+2. **Standard**: `& $pio device monitor` after setting `$pio` as above.
+3. **VS Code**: PlatformIO Monitor command.
 
 ### Live Debugging Patterns
 
@@ -933,7 +811,7 @@ build_flags =
 **Stack**: `uxTaskGetStackHighWaterMark(nullptr)` (< 512 bytes → increase stack)
 **Flush**: `logSerial.flush();` (force output before crash)
 
-**Port Detection**: Windows: `mode` | Linux: `ls /dev/ttyUSB* /dev/ttyACM*` or `dmesg | grep tty`
+**Port Detection**: `& $pio device list` in PowerShell.
 
 ---
 
@@ -958,7 +836,7 @@ build_flags =
    - `section.bin` version number incremented
 2. **Render settings change**:
    
-   - Font family or size (`SETTINGS.fontFamily`, `SETTINGS.fontSize`)
+   - Resolved SD reader font ID (selected family and size, `SETTINGS.getReaderFontId()`)
    
    - Line spacing (`SETTINGS.lineSpacing`)
    
@@ -970,22 +848,11 @@ build_flags =
    - Screen orientation change
    
    - Display resolution change
-4. **Book file modified**:
-   
-   - Moved, renamed, or content changed (new hash)
+4. **Book path changed**:
 
-**Manual Cache Clear** (safe operations):
+   - The EPUB cache directory is keyed by the file path in `lib/Epub/Epub.h`; moving or renaming a book changes the path hash. Do not assume an in-place content edit changes that hash.
 
-```bash
-# Delete ALL caches (forces full regeneration)
-rm -rf /path/to/sd/.crosspoint/
-
-# Delete specific book cache
-rm -rf /path/to/sd/.crosspoint/epub_<hash>/
-
-# Keep progress, delete only rendered sections
-rm -rf /path/to/sd/.crosspoint/epub_<hash>/sections/
-```
+**Manual cache clear**: On Windows, identify and verify the resolved SD-card path before using PowerShell `Remove-Item -LiteralPath` on `/.crosspoint/`, one `epub_<hash>/` directory, or its `sections/` directory. Deleting all caches forces regeneration; deleting only sections preserves other book cache data. Avoid Unix `rm -rf` instructions on this machine.
 
 **When to Clear Cache**:
 
@@ -1001,10 +868,10 @@ rm -rf /path/to/sd/.crosspoint/epub_<hash>/sections/
 
 **Source**: `lib/Epub/Epub/Section.cpp`, `lib/Epub/Epub/BookMetadataCache.cpp`
 
-**Current Versions** (as of docs/file-formats.md):
+**Current versions** (verify source constants before editing):
 
-- `book.bin`: **Version 7** (metadata structure)
-- `section.bin`: **Version 25** (layout structure)
+- `book.bin`: **Version 10** in `BookMetadataCache.cpp`
+- `section.bin`: **Version 50** in `Section.cpp`
 
 **Version Increment Rules**:
 
@@ -1012,18 +879,7 @@ rm -rf /path/to/sd/.crosspoint/epub_<hash>/sections/
 2. Version mismatch → Cache auto-invalidated and regenerated
 3. Document format changes in `docs/file-formats.md`
 
-**Example** (incrementing section format version):
-
-```cpp
-// lib/Epub/Epub/Section.cpp
-static constexpr uint8_t SECTION_FILE_VERSION = 26;  // Was 25, now 26
-
-// Add new field to structure
-struct PageLine {
-  // ... existing fields ...
-  uint16_t newField;  // New field added
-};
-```
+Review the associated partial/incomplete section-cache version handling when changing `SECTION_FILE_VERSION`.
 
 ---
 
