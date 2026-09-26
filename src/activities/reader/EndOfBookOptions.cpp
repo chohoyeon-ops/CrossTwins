@@ -5,6 +5,8 @@
 #include <HalGPIO.h>
 #include <I18n.h>
 
+#include <algorithm>
+
 #include "CrossPointSettings.h"
 #include "ReaderUtils.h"
 // ReaderUtils.h pulls in ActivityManager.h, which only forward-declares Activity while holding
@@ -176,6 +178,11 @@ void EndOfBookOptions::buildListScreen(UiScreen& screen) {
   props.selectedIndex = static_cast<int16_t>(selector.load(std::memory_order_relaxed));
   props.action = ACTION_ROW;
   props.inputMask = fui::InputTouch;  // physical buttons stay in handleMenuInput()
+  props = screen.resolveListProps(props);
+  props.labelText.maxLines = 2;
+  const int16_t twoLineRowHeight = static_cast<int16_t>(
+      screen.target().lineHeight(props.labelText.font) * props.labelText.maxLines + 2 * props.rowPaddingY);
+  props.rowHeight = std::max(props.rowHeight, twoLineRowHeight);
   screen.list(props);
 }
 
