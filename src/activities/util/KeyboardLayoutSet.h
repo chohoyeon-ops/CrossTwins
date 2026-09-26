@@ -1,30 +1,29 @@
 #pragma once
 
 #include <FreeInkUI.h>
-#include <I18n.h>
-
+#include <I18nKeys.h>
 #include <cstdint>
 
 namespace keyboard_layouts {
 
 struct LayoutInfo {
   freeink::ui::KeyboardLayoutId id;
-  Language language;
+  StrId label;
 };
 
 // Table position is the persisted bit assignment. Keep existing rows in place
 // and append new layouts so SDK enum changes cannot reinterpret saved masks.
 inline constexpr LayoutInfo ALL[] = {
-    {freeink::ui::KeyboardLayoutId::QwertyEn, Language::EN},
-    {freeink::ui::KeyboardLayoutId::AzertyFr, Language::FR},
-    {freeink::ui::KeyboardLayoutId::QwertzDe, Language::DE},
-    {freeink::ui::KeyboardLayoutId::SpanishEs, Language::ES},
-    {freeink::ui::KeyboardLayoutId::CyrillicRu, Language::RU},
-    {freeink::ui::KeyboardLayoutId::CyrillicUk, Language::UK},
-    {freeink::ui::KeyboardLayoutId::CyrillicBe, Language::BE},
-    {freeink::ui::KeyboardLayoutId::CyrillicKk, Language::KK},
-    {freeink::ui::KeyboardLayoutId::HebrewIl, Language::HE},
-    {freeink::ui::KeyboardLayoutId::ArabicAr, Language::AR},
+    {freeink::ui::KeyboardLayoutId::QwertyEn, StrId::STR_KB_LAYOUT_EN},
+    {freeink::ui::KeyboardLayoutId::AzertyFr, StrId::STR_KB_LAYOUT_FR},
+    {freeink::ui::KeyboardLayoutId::QwertzDe, StrId::STR_KB_LAYOUT_DE},
+    {freeink::ui::KeyboardLayoutId::SpanishEs, StrId::STR_KB_LAYOUT_ES},
+    {freeink::ui::KeyboardLayoutId::CyrillicRu, StrId::STR_KB_LAYOUT_RU},
+    {freeink::ui::KeyboardLayoutId::CyrillicUk, StrId::STR_KB_LAYOUT_UK},
+    {freeink::ui::KeyboardLayoutId::CyrillicBe, StrId::STR_KB_LAYOUT_BE},
+    {freeink::ui::KeyboardLayoutId::CyrillicKk, StrId::STR_KB_LAYOUT_KK},
+    {freeink::ui::KeyboardLayoutId::HebrewIl, StrId::STR_KB_LAYOUT_HE},
+    {freeink::ui::KeyboardLayoutId::ArabicAr, StrId::STR_KB_LAYOUT_AR},
 };
 inline constexpr uint8_t COUNT = sizeof(ALL) / sizeof(ALL[0]);
 static_assert(COUNT <= 16, "keyboard layout mask is uint16_t");

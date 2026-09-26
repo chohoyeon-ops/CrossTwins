@@ -13,13 +13,6 @@ uint8_t indexOf(const freeink::ui::KeyboardLayoutId id) {
   return COUNT;
 }
 
-freeink::ui::KeyboardLayoutId forLanguage(const Language language) {
-  for (uint8_t i = 0; i < COUNT; ++i) {
-    if (ALL[i].language == language) return ALL[i].id;
-  }
-  return freeink::ui::KeyboardLayoutId::QwertyEn;
-}
-
 constexpr uint16_t ALL_BITS = static_cast<uint16_t>((uint32_t{1} << COUNT) - 1);
 
 uint16_t layoutBit(const freeink::ui::KeyboardLayoutId id) {
@@ -38,14 +31,12 @@ uint16_t enabled() {
     if (configured & LATIN_BITS) return configured;
     return static_cast<uint16_t>(configured | layoutBit(freeink::ui::KeyboardLayoutId::QwertyEn));
   }
-  // Unconfigured: the UI language's layout plus English. An English UI collapses
-  // to one layout and the language key disappears -- there is nowhere to go.
-  return static_cast<uint16_t>(layoutBit(forLanguage(I18N.getLanguage())) |
-                               layoutBit(freeink::ui::KeyboardLayoutId::QwertyEn));
+  // Neither supported UI language has a separate keyboard layout.
+  return layoutBit(freeink::ui::KeyboardLayoutId::QwertyEn);
 }
 
 freeink::ui::KeyboardLayoutId startingLayout() {
-  const freeink::ui::KeyboardLayoutId preferred = forLanguage(I18N.getLanguage());
+  const freeink::ui::KeyboardLayoutId preferred = freeink::ui::KeyboardLayoutId::QwertyEn;
   if (enabled() & layoutBit(preferred)) return preferred;
   // Switched off: opening on it anyway would ignore a deliberate choice.
   return next(preferred);
