@@ -80,8 +80,8 @@ std::string normalisePath(const std::string& path) {
   return result;
 }
 
-bool naturalLess(const std::string& str1, const std::string& str2) {
-  // Naive natural sort: numeric-aware, case-insensitive
+namespace {
+int compareNatural(const std::string& str1, const std::string& str2) {
   const char* s1 = str1.c_str();
   const char* s2 = str2.c_str();
 
@@ -113,11 +113,11 @@ bool naturalLess(const std::string& str1, const std::string& str2) {
     if (isDigit(*s1) && isDigit(*s2)) {
       while (true) {
         const int order = compareDigits(s1, s2);
-        if (order != 0) return order < 0;
+        if (order != 0) return order;
 
         const bool next1 = *s1 == '.' && isDigit(s1[1]);
         const bool next2 = *s2 == '.' && isDigit(s2[1]);
-        if (next1 != next2) return !next1;
+        if (next1 != next2) return next1 ? 1 : -1;
         if (!next1) break;
         ++s1;
         ++s2;
@@ -126,14 +126,24 @@ bool naturalLess(const std::string& str1, const std::string& str2) {
       // Regular case-insensitive character comparison
       const int c1 = tolower(static_cast<unsigned char>(*s1));
       const int c2 = tolower(static_cast<unsigned char>(*s2));
-      if (c1 != c2) return c1 < c2;
+      if (c1 != c2) return c1 < c2 ? -1 : 1;
       s1++;
       s2++;
     }
   }
 
   // One string is prefix of other
-  if (*s1 != *s2) return *s1 == '\0';
+  if (*s1 != *s2) return *s1 == '\0' ? -1 : 1;
+
+  return 0;
+}
+}  // namespace
+
+bool naturalEquivalent(const std::string& str1, const std::string& str2) { return compareNatural(str1, str2) == 0; }
+
+bool naturalLess(const std::string& str1, const std::string& str2) {
+  const int order = compareNatural(str1, str2);
+  if (order != 0) return order < 0;
 
   // Numeric values and case may compare equal for distinct filenames.
   if (str1.size() != str2.size()) return str1.size() < str2.size();

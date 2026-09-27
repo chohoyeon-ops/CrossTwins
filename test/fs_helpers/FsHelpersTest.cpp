@@ -62,6 +62,14 @@ TEST(NaturalLess, BreaksNumericTiesByOriginalSpelling) {
             FsHelpers::naturalLess("Book 01.epub", "Book 1.epub"));
 }
 
+TEST(NaturalEquivalent, NextBookFinderSkipsCaseAndNumericEquivalentNames) {
+  EXPECT_TRUE(FsHelpers::naturalEquivalent("Book 1.epub", "Book 01.epub"));
+  EXPECT_TRUE(FsHelpers::naturalEquivalent("Book 1.epub", "Book 1.EPUB"));
+  EXPECT_FALSE(FsHelpers::naturalEquivalent("Book 1.epub", "Book 1.5.epub"));
+  EXPECT_TRUE(FsHelpers::naturalLess("Book 1.epub", "Book 01.epub"));
+  EXPECT_TRUE(FsHelpers::naturalLess("Book 1.EPUB", "Book 1.epub"));
+}
+
 TEST(NaturalLess, HasStrictWeakOrderingOnRepresentativeNames) {
   const std::vector<std::string> names = {
       "",          "1",          "01",   "001",   "0001", "1.", "1..2", "1.0",         "1.2",           "1.2.3",
