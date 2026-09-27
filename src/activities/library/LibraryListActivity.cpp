@@ -25,6 +25,7 @@
 #include "components/icons/search32.h"
 #include "fontIds.h"
 #include "util/BookCacheUtils.h"
+#include "util/BookProgress.h"
 
 namespace fui = freeink::ui;
 
@@ -36,6 +37,32 @@ constexpr int RECENT_TAB = 0;
 constexpr int TITLE_TAB = 1;
 constexpr int AUTHOR_TAB = 2;
 constexpr int TAB_SLOTS = AUTHOR_TAB + 1;
+constexpr int8_t PROGRESS_NOT_LOADED = -2;
+
+void drawRecentProgress(GfxRenderer& renderer, fui::DrawTarget& target, const fui::Rect bar, const int percent) {
+  if (percent < 0 || bar.width < 3 || bar.height < 3) return;
+  target.fill(bar, fui::Paint::solid(fui::Color::White));
+  target.stroke(bar, fui::Paint::solid(fui::Color::Black), 1);
+  const fui::Rect inner{static_cast<int16_t>(bar.x + 1), static_cast<int16_t>(bar.y + 1),
+                        static_cast<int16_t>(bar.width - 2), static_cast<int16_t>(bar.height - 2)};
+  const int width = inner.width * std::clamp(percent, 0, 100) / 100;
+  if (width <= 0) return;
+  const fui::Rect fill{inner.x, inner.y, static_cast<int16_t>(width), inner.height};
+  if (percent <= 25) {
+    target.fill(fill, fui::Paint::dither(fui::Color::LightGray));
+  } else if (percent <= 50) {
+    target.fill(fill, fui::Paint::dither(fui::Color::DarkGray));
+  } else if (percent <= 75) {
+    target.fill(fill, fui::Paint::solid(fui::Color::Black));
+    for (int y = fill.y; y < fill.bottom(); ++y) {
+      for (int x = fill.x; x < fill.right(); ++x) {
+        if ((x & 1) == 0 && (y & 1) == 0) renderer.drawPixel(x, y, false);
+      }
+    }
+  } else {
+    target.fill(fill, fui::Paint::solid(fui::Color::Black));
+  }
+}
 
 constexpr bool isDescending(const library::SortOrder order) {
   return order == library::SortOrder::RecentDesc || order == library::SortOrder::TitleDesc ||
@@ -79,6 +106,7 @@ void LibraryListActivity::onEnter() {
   // render task's SD-loaded fonts read glyph data at draw time, and the walk
   // needs the card to itself.
   RenderLock lock(*this);
+  progressWindowStart = -1;
   UiTabListActivity::onEnter();
   app.on(ACTION_SEARCH, &LibraryListActivity::searchActionTrampoline, this);
   app.on(ACTION_REBUILD, &LibraryListActivity::rebuildActionTrampoline, this);
@@ -152,6 +180,7 @@ int LibraryListActivity::pinnedCount() const {
 }
 
 void LibraryListActivity::resolvePinned() {
+  progressWindowStart = -1;
   const auto& books = RECENT_BOOKS.getBooks();
   pinnedTotal = static_cast<uint8_t>(std::min<size_t>(books.size(), RecentBooksStore::MAX_RECENT_BOOKS));
   for (int i = 0; i < pinnedTotal; i++) pinnedAscRows[i] = 0xFFFF;
@@ -216,6 +245,7 @@ void LibraryListActivity::openSelectedBook() {
 // hold a file open at a time, and the reader is about to open files of its own.
 void LibraryListActivity::openBookByPath(const std::string& path) {
   app.clearTapFlash();
+  progressWindowStart = -1;
   index.close();
   onSelectBook(path);
 }
@@ -602,6 +632,7 @@ void LibraryListActivity::restoreExpandedList() {
 // array is allocated once with the exact upper bound and fails back to an
 // explicit message rather than letting vector growth abort the firmware.
 void LibraryListActivity::applyFilter() {
+  progressWindowStart = -1;
   groupsCollapsed = false;
   groupCount = 0;
   filtered.reset();
@@ -714,6 +745,23 @@ bool LibraryListActivity::rowTextFor(const int entry, std::string& title, std::s
   return true;
 }
 
+int LibraryListActivity::recentProgressFor(const int entry, std::string& path) {
+  if (entry < progressWindowStart || entry - progressWindowStart >= static_cast<int>(winProgress.size())) return -1;
+  int8_t& cached = winProgress[static_cast<size_t>(entry - progressWindowStart)];
+  if (cached != PROGRESS_NOT_LOADED) return cached;
+  path.clear();
+  if (entry < pinnedCount()) {
+    const auto& books = RECENT_BOOKS.getBooks();
+    if (entry < static_cast<int>(books.size())) path = books[static_cast<size_t>(entry)].path;
+  } else if (index.isOpen()) {
+    const uint16_t ordinal = index.ordinalForRow(sortOrder, static_cast<uint16_t>(rowFor(entry)));
+    library::ClixRecord record{};
+    if (ordinal != 0xFFFF && index.readRecord(ordinal, record)) index.readPath(record, path);
+  }
+  cached = static_cast<int8_t>(path.empty() ? -1 : std::clamp(loadBookProgress(path), -1, 100));
+  return cached;
+}
+
 bool LibraryListActivity::handleCustomInput() {
   if (optionPopup.handleInput(mappedInput, [this] { requestUpdate(); })) return true;
 
@@ -817,6 +865,18 @@ void LibraryListActivity::buildRows(UiScreen& screen) {
   // rows edge-to-edge.
   props.rowGap = std::max<int16_t>(screen.theme().listRowGap, 6);
   props.headerUnderline = false;
+  const bool recent = activeTabIndex == RECENT_TAB;
+  if (recent) {
+    props.labelText.maxLines = 2;
+    props = screen.resolveListProps(props);
+    const int16_t titleHeight = static_cast<int16_t>(screen.target().lineHeight(props.labelText.font) * 2);
+    const int16_t authorHeight = screen.target().lineHeight(props.subtitleText.font);
+    const int16_t gap = screen.theme().spaceSm;
+    const int16_t barHeight = screen.theme().progressHeight;
+    const int16_t required =
+        static_cast<int16_t>(2 * props.rowPaddingY + titleHeight + authorHeight + 2 * gap + barHeight);
+    props.rowHeight = std::max(props.rowHeight, required);
+  }
   syncTabListViewport(screen, props);
 
   // Keep one extra entry in the reusable window for a clipped trailing row.
@@ -834,6 +894,10 @@ void LibraryListActivity::buildRows(UiScreen& screen) {
   rowFile.reserve(128);
   // Capture this after syncTabListViewport(), which may clamp nav.top.
   const int windowStart = static_cast<int>(props.topIndex);
+  if (recent && (progressWindowStart != windowStart || winProgress.size() != cap)) {
+    winProgress.assign(cap, PROGRESS_NOT_LOADED);
+    progressWindowStart = windowStart;
+  }
   for (int entry = windowStart; entry < count && rows < static_cast<int>(cap); entry++) {
     std::string& title = winTitles[static_cast<size_t>(rows)];
     std::string& author = winAuthors[static_cast<size_t>(rows)];
@@ -865,10 +929,10 @@ void LibraryListActivity::buildRows(UiScreen& screen) {
           formatInitialHeading(initial, heading);
         item.sectionHeading = heading.c_str();
       }
-      if (!authorGrouped && !author.empty()) item.subtitle = author.c_str();
+      if (!recent && !authorGrouped && !author.empty()) item.subtitle = author.c_str();
     }
 
-    item.label = title.c_str();
+    item.label = recent ? "" : title.c_str();
     // Group headings stay bare; every book row gets its file-type icon.
     if (!groupsCollapsed && !rowFile.empty()) item.icon = listIconFor(UITheme::getFileIcon(rowFile), 32);
     item.actionValue = static_cast<int16_t>(entry);
@@ -880,14 +944,72 @@ void LibraryListActivity::buildRows(UiScreen& screen) {
   props.itemsWindowFirst = static_cast<uint16_t>(windowStart);
   props.itemsWindowCount = static_cast<uint16_t>(winItems.size());
   screen.list(props);
+  if (recent) {
+    const fui::Rect body = screen.body();
+    fui::Rect rowArea = body;
+    rowArea.x = static_cast<int16_t>(rowArea.x + props.rowInset);
+    rowArea.width = static_cast<int16_t>(rowArea.width - 2 * props.rowInset);
+    if (props.scrollIndicator && props.scrollIndicatorWidth > 0) {
+      const int16_t needed = static_cast<int16_t>(props.scrollIndicatorWidth + props.scrollIndicatorInset + 2);
+      if (props.rowInset < needed) {
+        const int16_t cut = static_cast<int16_t>(needed - props.rowInset);
+        rowArea.width = static_cast<int16_t>(rowArea.width - cut);
+        if (props.scrollIndicatorSide == 1) rowArea.x = static_cast<int16_t>(rowArea.x + cut);
+      }
+    }
+    const fui::Rect previousClip = screen.target().clipRect();
+    const int16_t left = std::max(rowArea.x, previousClip.x);
+    const int16_t top = std::max(rowArea.y, previousClip.y);
+    const int16_t right = std::min(rowArea.right(), previousClip.right());
+    const int16_t bottom = std::min(rowArea.bottom(), previousClip.bottom());
+    if (right > left && bottom > top &&
+        screen.target().setClipRect(
+            fui::Rect{left, top, static_cast<int16_t>(right - left), static_cast<int16_t>(bottom - top)})) {
+      const int16_t titleHeight = static_cast<int16_t>(screen.target().lineHeight(props.labelText.font) * 2);
+      const int16_t authorHeight = screen.target().lineHeight(props.subtitleText.font);
+      const int16_t gap = screen.theme().spaceSm;
+      const int16_t barHeight = screen.theme().progressHeight;
+      const int16_t contentHeight =
+          static_cast<int16_t>(2 * props.rowPaddingY + titleHeight + authorHeight + 2 * gap + barHeight);
+      for (int r = 0; r < rows; ++r) {
+        const int16_t rowY = static_cast<int16_t>(rowArea.y + r * (props.rowHeight + props.rowGap));
+        if (rowY >= rowArea.bottom() || rowArea.bottom() - rowY < props.partialTrailingMinHeight) break;
+        const auto& item = winItems[static_cast<size_t>(r)];
+        const bool partial = rowY + props.rowHeight > rowArea.bottom();
+        fui::State state = item.state;
+        if (!partial && props.selectedIndex == item.actionValue) state |= fui::StateSelected;
+        if (!item.enabled) state |= fui::StateDisabled;
+        if (!partial) state = screen.frame().stateFor(props.action, item.actionValue, state);
+        const fui::Paint ink = props.rowStyles.resolve(state).foreground;
+        const int16_t iconWidth = item.icon ? static_cast<int16_t>(item.icon.width + props.textGap) : 0;
+        const int16_t textX = static_cast<int16_t>(rowArea.x + props.sidePadding + iconWidth);
+        const int16_t textWidth = static_cast<int16_t>(rowArea.width - 2 * props.sidePadding - iconWidth);
+        if (textWidth <= 0) continue;
+        const int16_t titleY = static_cast<int16_t>(rowY + (props.rowHeight - contentHeight) / 2 + props.rowPaddingY);
+        screen.target().text(fui::Rect{textX, titleY, textWidth, titleHeight},
+                             winTitles[static_cast<size_t>(r)].c_str(),
+                             fui::textStyleWithForeground(props.labelText, ink));
+        const int16_t authorY = static_cast<int16_t>(titleY + titleHeight + gap);
+        const std::string& author = winAuthors[static_cast<size_t>(r)];
+        if (!author.empty()) {
+          screen.target().text(fui::Rect{textX, authorY, textWidth, authorHeight}, author.c_str(),
+                               fui::textStyleWithForeground(props.subtitleText, ink));
+        }
+        const int16_t barY = static_cast<int16_t>(authorY + authorHeight + gap);
+        drawRecentProgress(renderer, screen.target(), fui::Rect{textX, barY, textWidth, barHeight},
+                           recentProgressFor(item.actionValue, rowFile));
+      }
+      screen.target().setClipRect(previousClip);
+    }
+  }
   const int next = nav.drawnRows;
   const auto body = screen.body();
   LOG_DBG("LIB", "page tab=%d top=%d full=%d loaded=%d body=%d..%d next=%d title=%s", activeTabIndex, windowStart,
           nav.drawnRows, rows, body.y, body.bottom(),
           next < rows ? winItems[static_cast<size_t>(next)].actionValue : -1,
-          next < rows ? winItems[static_cast<size_t>(next)].label : "<none>");
+          next < rows ? winTitles[static_cast<size_t>(next)].c_str() : "<none>");
   LOG_DBG("LIB", "page first=%d title=%s", rows > 0 ? winItems[0].actionValue : -1,
-          rows > 0 ? winItems[0].label : "<none>");
+          rows > 0 ? winTitles[0].c_str() : "<none>");
 }
 
 void LibraryListActivity::formatInitialHeading(uint32_t initial, std::string& out) {
