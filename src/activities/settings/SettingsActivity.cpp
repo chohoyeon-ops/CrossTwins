@@ -87,6 +87,7 @@ void SettingsActivity::rebuildSettingsLists() {
   }
 
   // Append device-only ACTION items
+  displaySettings.push_back(SettingInfo::Action(StrId::STR_SLIDESHOW_INTERVAL, SettingAction::SlideshowInterval));
   if (!BoardConfig::hasTouch()) {
     controlsSettings.insert(controlsSettings.begin(),
                             SettingInfo::Action(StrId::STR_REMAP_FRONT_BUTTONS, SettingAction::RemapFrontButtons));
@@ -443,6 +444,9 @@ void SettingsActivity::toggleCurrentSetting() {
           LOG_ERR("SETTINGS", "OOM: AboutActivity");
         }
         break;
+      case SettingAction::SlideshowInterval:
+        openSlideshowIntervalPicker();
+        break;
       case SettingAction::None:
         // Do nothing
         break;
@@ -497,8 +501,35 @@ void SettingsActivity::openSleepTimeoutPicker() {
       });
 }
 
+void SettingsActivity::openSlideshowIntervalPicker() {
+  auto activity = makeUniqueNoThrow<IntervalSelectionActivity>(
+      renderer, mappedInput, "SlideshowInterval", StrId::STR_SLIDESHOW_INTERVAL, SETTINGS.slideshowIntervalSeconds,
+      CrossPointSettings::MIN_SLIDESHOW_INTERVAL_SECONDS, CrossPointSettings::MAX_SLIDESHOW_INTERVAL_SECONDS, 10, 60,
+      StrId::STR_NONE_OPT, false, StrId::STR_NONE_OPT, true);
+  if (!activity) {
+    LOG_ERR("SETTINGS", "OOM: slideshow interval picker");
+    return;
+  }
+  startActivityForResult(std::move(activity), [this](const ActivityResult& result) {
+    if (!result.isCancelled) {
+      const auto selected = static_cast<uint16_t>(std::get<IntervalResult>(result.data).value);
+      if (selected != SETTINGS.slideshowIntervalSeconds) {
+        SETTINGS.slideshowIntervalSeconds = selected;
+        SETTINGS.saveToFile();
+      }
+    }
+    requestUpdate();
+  });
+}
+
 std::string SettingsActivity::settingValueText(const SettingInfo& setting) {
   if (setting.action == SettingAction::HomeButton) return tr(STR_CONFIGURE);
+  if (setting.action == SettingAction::SlideshowInterval) {
+    char valueBuffer[32];
+    IntervalSelectionActivity::formatDurationSeconds(valueBuffer, sizeof(valueBuffer),
+                                                     SETTINGS.slideshowIntervalSeconds);
+    return valueBuffer;
+  }
   if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
     return SETTINGS.*(setting.valuePtr) ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
   }
