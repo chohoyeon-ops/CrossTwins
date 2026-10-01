@@ -1,0 +1,4 @@
+add_executable(txt_index_format_tests TxtIndexFormatTest.cpp)
+target_include_directories(txt_index_format_tests PRIVATE ${REPO_ROOT}/lib/Txt)
+target_link_libraries(txt_index_format_tests PRIVATE crosspoint_test_common GTest::gtest_main)
+gtest_discover_tests(txt_index_format_tests)

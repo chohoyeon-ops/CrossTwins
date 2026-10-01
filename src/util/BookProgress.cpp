@@ -6,6 +6,7 @@
 #include <Logging.h>
 #include <Memory.h>
 #include <Txt.h>
+#include <TxtIndexFormat.h>
 #include <Xtc.h>
 
 #include <algorithm>
@@ -59,19 +60,18 @@ int loadBookProgress(const std::string& path) {
     HalFile file;
     if (!Storage.openFileForRead("HOME", txt.getCachePath() + "/progress.bin", file) || file.read(data, 4) != 4)
       return -1;
-    const uint32_t page = data[0] | (data[1] << 8);
+    const uint32_t page = data[0] | (uint32_t(data[1]) << 8);
     HalFile index;
-    // TXT index v3: magic, version, file size, four layout fields, alignment, page count.
-    uint8_t header[30];
-    if (!Storage.openFileForRead("HOME", txt.getCachePath() + "/index.bin", index) ||
-        index.read(header, sizeof(header)) != sizeof(header))
+    uint8_t rawHeader[txt::INDEX_HEADER_V5_SIZE]{};
+    if (!Storage.openFileForRead("HOME", txt.getCachePath() + "/index.bin", index)) return -1;
+    const int headerBytes = index.read(rawHeader, sizeof(rawHeader));
+    txt::IndexHeader header;
+    if (headerBytes < 0 ||
+        !txt::parseIndexHeader(rawHeader, static_cast<size_t>(headerBytes), index.size(), header))
       return -1;
-    if (readLe32(header) != 0x54585449 || header[4] != 3) return -1;
-    const uint32_t pages = readLe32(header + 26);
-    if (pages == 0 || pages > (index.size() - sizeof(header)) / 4) return -1;
     HalFile source;
-    if (!Storage.openFileForRead("HOME", path, source) || source.size() != readLe32(header + 5)) return -1;
-    return std::min<int>(100, static_cast<int>((page + 1) * 100ULL / pages));
+    if (!Storage.openFileForRead("HOME", path, source) || source.size() != header.sourceFileSize) return -1;
+    return std::min<int>(100, static_cast<int>((page + 1) * 100ULL / header.pageCount));
   }
   return -1;
 }

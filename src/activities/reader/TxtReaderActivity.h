@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Txt.h>
+#include <TxtIndexFormat.h>
 #include <TxtPageLayout.h>
 
 #include <memory>
@@ -20,11 +21,13 @@ class TxtReaderActivity final : public ReaderActivity {
   std::vector<size_t> pageOffsets;
   std::vector<txt::PageLine> currentPageLines;
   int linesPerPage = 0;
+  int lineAdvance = 1;
   int viewportWidth = 0;
   bool initialized = false;
 
   // Cached settings for cache validation
   int cachedFontId = 0;
+  uint8_t cachedFontPointSize = 0;
   uint8_t cachedScreenMargin = 0;
   uint8_t cachedParagraphAlignment = CrossPointSettings::LEFT_ALIGN;
   int cachedOrientedMarginTop = 0;
@@ -40,7 +43,9 @@ class TxtReaderActivity final : public ReaderActivity {
   bool loadPageIndexCache();
   void savePageIndexCache() const;
   void saveProgress() const;
-  void loadProgress();
+  bool readSavedProgress(txt::ProgressRecord& progress) const;
+  bool deriveLegacySourceAnchor(uint16_t page, uint32_t& sourceAnchor) const;
+  void applySavedProgress(const txt::ProgressRecord& progress, bool hasProgress);
   void renderStatusBar() const;
 
   bool loadBook() override;

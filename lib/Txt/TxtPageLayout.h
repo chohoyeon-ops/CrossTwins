@@ -22,6 +22,18 @@ class PageLayout {
   static constexpr size_t CHUNK_SIZE = 8 * 1024;
   static constexpr size_t READ_AHEAD = 5;
 
+  static int effectiveLineAdvance(int rendererAdvance) { return std::max(1, rendererAdvance); }
+
+  static int calculateLinesPerPage(int viewportHeight, int lineAdvance) {
+    return std::max(1, viewportHeight / effectiveLineAdvance(lineAdvance));
+  }
+
+  static size_t pageForSourceAnchor(const std::vector<size_t>& pageOffsets, size_t sourceAnchor) {
+    if (pageOffsets.empty()) return 0;
+    const auto page = std::upper_bound(pageOffsets.begin(), pageOffsets.end(), sourceAnchor);
+    return page == pageOffsets.begin() ? 0 : static_cast<size_t>(page - pageOffsets.begin() - 1);
+  }
+
   struct ReadWindow {
     size_t offset;
     size_t length;

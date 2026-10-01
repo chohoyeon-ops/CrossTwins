@@ -267,3 +267,23 @@ TEST(TxtPageLayout, EmptyInputDoesNotProduceAProgressingPage) {
   EXPECT_TRUE(page.lines.empty());
   EXPECT_EQ(page.nextOffset, 0u);
 }
+
+TEST(TxtPageLayout, UsesOnePositiveLineAdvanceForPagination) {
+  EXPECT_EQ(PageLayout::effectiveLineAdvance(20), 20);
+  EXPECT_EQ(PageLayout::calculateLinesPerPage(480, 20), 24);
+  EXPECT_EQ(PageLayout::effectiveLineAdvance(0), 1);
+  EXPECT_EQ(PageLayout::calculateLinesPerPage(480, 0), 480);
+  EXPECT_EQ(PageLayout::calculateLinesPerPage(0, 20), 1);
+}
+
+TEST(TxtPageLayout, MapsSourceAnchorsToGreatestPageStartAtOrBeforeAnchor) {
+  const std::vector<size_t> pageOffsets{0, 100, 200, 300};
+  EXPECT_EQ(PageLayout::pageForSourceAnchor(pageOffsets, 0), 0u);
+  EXPECT_EQ(PageLayout::pageForSourceAnchor(pageOffsets, 99), 0u);
+  EXPECT_EQ(PageLayout::pageForSourceAnchor(pageOffsets, 100), 1u);
+  EXPECT_EQ(PageLayout::pageForSourceAnchor(pageOffsets, 199), 1u);
+  EXPECT_EQ(PageLayout::pageForSourceAnchor(pageOffsets, 200), 2u);
+  EXPECT_EQ(PageLayout::pageForSourceAnchor(pageOffsets, 201), 2u);
+  EXPECT_EQ(PageLayout::pageForSourceAnchor(pageOffsets, 300), 3u);
+  EXPECT_EQ(PageLayout::pageForSourceAnchor(pageOffsets, 500), 3u);
+}
