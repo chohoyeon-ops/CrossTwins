@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Txt.h>
+#include <TxtPageLayout.h>
 
 #include <memory>
 #include <string>
@@ -17,7 +18,7 @@ class TxtReaderActivity final : public ReaderActivity {
 
   // Streaming text reader - stores file offsets for each page
   std::vector<size_t> pageOffsets;
-  std::vector<std::string> currentPageLines;
+  std::vector<txt::PageLine> currentPageLines;
   int linesPerPage = 0;
   int viewportWidth = 0;
   bool initialized = false;
@@ -33,7 +34,7 @@ class TxtReaderActivity final : public ReaderActivity {
 
   void renderPage(GfxRenderer& renderer);
   void initializeReader(GfxRenderer& renderer);
-  bool loadPageAtOffset(const GfxRenderer& renderer, size_t offset, std::vector<std::string>& outLines,
+  bool loadPageAtOffset(const GfxRenderer& renderer, size_t offset, std::vector<txt::PageLine>& outLines,
                         size_t& nextOffset);
   void buildPageIndex(GfxRenderer& renderer);
   bool loadPageIndexCache();
