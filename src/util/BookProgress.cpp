@@ -62,7 +62,7 @@ int loadBookProgress(const std::string& path) {
       return -1;
     const uint32_t page = data[0] | (uint32_t(data[1]) << 8);
     HalFile index;
-    uint8_t rawHeader[txt::INDEX_HEADER_V5_SIZE]{};
+    uint8_t rawHeader[txt::INDEX_HEADER_V6_SIZE]{};
     if (!Storage.openFileForRead("HOME", txt.getCachePath() + "/index.bin", index)) return -1;
     const int headerBytes = index.read(rawHeader, sizeof(rawHeader));
     txt::IndexHeader header;

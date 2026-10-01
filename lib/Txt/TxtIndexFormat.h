@@ -10,9 +10,11 @@ constexpr uint32_t INDEX_MAGIC = 0x54585449;
 constexpr uint8_t INDEX_VERSION_V3 = 3;
 constexpr uint8_t INDEX_VERSION_V4 = 4;
 constexpr uint8_t INDEX_VERSION_V5 = 5;
+constexpr uint8_t INDEX_VERSION_V6 = 6;
 constexpr size_t INDEX_HEADER_V3_SIZE = 30;
 constexpr size_t INDEX_HEADER_V4_SIZE = 30;
 constexpr size_t INDEX_HEADER_V5_SIZE = 35;
+constexpr size_t INDEX_HEADER_V6_SIZE = 49;
 
 struct IndexHeader {
   uint8_t version = 0;
@@ -24,6 +26,11 @@ struct IndexHeader {
   uint8_t alignment = 0;
   int32_t lineAdvance = 0;
   uint8_t fontPointSize = 0;
+  int32_t viewportHeight = 0;
+  int32_t paragraphGap = 0;
+  int32_t paragraphIndentWidth = 0;
+  uint8_t extraParagraphSpacing = 0;
+  uint8_t paragraphIndentSpaces = 0;
   uint32_t pageCount = 0;
   size_t headerSize = 0;
 };
@@ -36,6 +43,11 @@ struct LayoutKey {
   uint8_t alignment = 0;
   int32_t lineAdvance = 0;
   uint8_t fontPointSize = 0;
+  int32_t viewportHeight = 0;
+  int32_t paragraphGap = 0;
+  int32_t paragraphIndentWidth = 0;
+  uint8_t extraParagraphSpacing = 0;
+  uint8_t paragraphIndentSpaces = 0;
 };
 
 struct ProgressRecord {
@@ -67,6 +79,7 @@ inline size_t headerSizeForVersion(uint8_t version) {
   if (version == INDEX_VERSION_V3) return INDEX_HEADER_V3_SIZE;
   if (version == INDEX_VERSION_V4) return INDEX_HEADER_V4_SIZE;
   if (version == INDEX_VERSION_V5) return INDEX_HEADER_V5_SIZE;
+  if (version == INDEX_VERSION_V6) return INDEX_HEADER_V6_SIZE;
   return 0;
 }
 
@@ -84,10 +97,19 @@ inline bool parseIndexHeader(const uint8_t* data, size_t dataSize, size_t indexF
   parsed.fontId = readLeI32(data + 17);
   parsed.screenMargin = readLeI32(data + 21);
   parsed.alignment = data[25];
-  if (version == INDEX_VERSION_V5) {
+  if (version == INDEX_VERSION_V5 || version == INDEX_VERSION_V6) {
     parsed.lineAdvance = readLeI32(data + 26);
     parsed.fontPointSize = data[30];
-    parsed.pageCount = readLe32(data + 31);
+    if (version == INDEX_VERSION_V6) {
+      parsed.viewportHeight = readLeI32(data + 31);
+      parsed.paragraphGap = readLeI32(data + 35);
+      parsed.paragraphIndentWidth = readLeI32(data + 39);
+      parsed.extraParagraphSpacing = data[43];
+      parsed.paragraphIndentSpaces = data[44];
+      parsed.pageCount = readLe32(data + 45);
+    } else {
+      parsed.pageCount = readLe32(data + 31);
+    }
   } else {
     parsed.pageCount = readLe32(data + 26);
   }
@@ -103,10 +125,14 @@ inline bool parseIndexHeader(const uint8_t* data, size_t dataSize, size_t indexF
 }
 
 inline bool matchesLayout(const IndexHeader& header, const LayoutKey& key) {
-  return header.version == INDEX_VERSION_V5 && header.viewportWidth == key.viewportWidth &&
+  return header.version == INDEX_VERSION_V6 && header.viewportWidth == key.viewportWidth &&
          header.linesPerPage == key.linesPerPage && header.fontId == key.fontId &&
          header.screenMargin == key.screenMargin && header.alignment == key.alignment &&
-         header.lineAdvance == key.lineAdvance && header.fontPointSize == key.fontPointSize;
+         header.lineAdvance == key.lineAdvance && header.fontPointSize == key.fontPointSize &&
+         header.viewportHeight == key.viewportHeight && header.paragraphGap == key.paragraphGap &&
+         header.paragraphIndentWidth == key.paragraphIndentWidth &&
+         header.extraParagraphSpacing == key.extraParagraphSpacing &&
+         header.paragraphIndentSpaces == key.paragraphIndentSpaces;
 }
 
 inline bool parseProgressRecord(const uint8_t* data, size_t dataSize, uint32_t sourceFileSize,
@@ -134,8 +160,8 @@ inline void writeProgressRecord(uint8_t* data, uint16_t page, uint32_t sourceAnc
 template <typename ReadPageOffset, typename IsUtf8Boundary>
 bool deriveLegacyPageAnchor(const IndexHeader& header, uint32_t page, uint32_t sourceFileSize,
                             ReadPageOffset readPageOffset, IsUtf8Boundary isUtf8Boundary, uint32_t& sourceAnchor) {
-  if ((header.version != INDEX_VERSION_V3 && header.version != INDEX_VERSION_V4) ||
-      header.sourceFileSize != sourceFileSize || page >= header.pageCount) {
+  if (headerSizeForVersion(header.version) == 0 || header.sourceFileSize != sourceFileSize ||
+      page >= header.pageCount) {
     return false;
   }
 

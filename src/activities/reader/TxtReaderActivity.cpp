@@ -18,7 +18,29 @@
 
 namespace {
 // Cache file magic and version
-constexpr uint8_t CACHE_VERSION = txt::INDEX_VERSION_V5;  // Increment when cache behavior changes
+constexpr uint8_t CACHE_VERSION = txt::INDEX_VERSION_V6;  // Increment when cache behavior changes
+
+txt::PageLayout::Geometry::Alignment pageAlignmentForSettings(uint8_t alignment) {
+  using Alignment = txt::PageLayout::Geometry::Alignment;
+  switch (alignment) {
+    case CrossPointSettings::JUSTIFIED:
+      return Alignment::JUSTIFIED;
+    case CrossPointSettings::LEFT_ALIGN:
+      return Alignment::LEFT;
+    case CrossPointSettings::CENTER_ALIGN:
+      return Alignment::CENTER;
+    case CrossPointSettings::RIGHT_ALIGN:
+      return Alignment::RIGHT;
+    case CrossPointSettings::BOOK_STYLE:
+      return Alignment::BOOK_STYLE;
+    default:
+      return Alignment::LEFT;
+  }
+}
+
+bool txtLineStartsWithRtl(const char* text) {
+  return BidiUtils::startsWithRtl(text, BidiUtils::RTL_PARAGRAPH_PROBE_DEPTH);
+}
 }  // namespace
 
 bool TxtReaderActivity::loadBook() {
@@ -44,6 +66,8 @@ void TxtReaderActivity::initializeReader(GfxRenderer& renderer) {
   cachedFontId = SETTINGS.getReaderFontId();
   cachedFontPointSize = SETTINGS.fontPointSize;
   cachedScreenMargin = SETTINGS.screenMargin;
+  cachedExtraParagraphSpacing = SETTINGS.extraParagraphSpacing != 0;
+  cachedParagraphIndentSpaces = SETTINGS.paragraphIndentSpaces;
   cachedParagraphAlignment = SETTINGS.paragraphAlignment;
 
   // Calculate viewport dimensions
@@ -56,12 +80,15 @@ void TxtReaderActivity::initializeReader(GfxRenderer& renderer) {
       std::max(cachedScreenMargin, static_cast<uint8_t>(UITheme::getInstance().getStatusBarHeight()));
 
   viewportWidth = renderer.getScreenWidth() - cachedOrientedMarginLeft - cachedOrientedMarginRight;
-  const int viewportHeight = renderer.getScreenHeight() - cachedOrientedMarginTop - cachedOrientedMarginBottom;
+  cachedViewportHeight = renderer.getScreenHeight() - cachedOrientedMarginTop - cachedOrientedMarginBottom;
   lineAdvance = txt::PageLayout::effectiveLineAdvance(
       renderer.getLineHeight(cachedFontId, SETTINGS.getReaderLineCompression()));
-  linesPerPage = txt::PageLayout::calculateLinesPerPage(viewportHeight, lineAdvance);
+  paragraphGap = cachedExtraParagraphSpacing ? lineAdvance / 2 : 0;
+  paragraphIndentWidth = txt::PageLayout::indentWidthForSpaces(
+      renderer.getSpaceWidth(cachedFontId, EpdFontFamily::REGULAR), cachedParagraphIndentSpaces);
+  linesPerPage = txt::PageLayout::calculateLinesPerPage(cachedViewportHeight, lineAdvance);
 
-  LOG_DBG("TRS", "Viewport: %dx%d, lines per page: %d", viewportWidth, viewportHeight, linesPerPage);
+  LOG_DBG("TRS", "Viewport: %dx%d, lines per page: %d", viewportWidth, cachedViewportHeight, linesPerPage);
 
   // Migrate old page-only progress before an incompatible index can be rebuilt.
   txt::ProgressRecord savedProgress;
@@ -156,8 +183,14 @@ bool TxtReaderActivity::loadPageAtOffset(const GfxRenderer& renderer, size_t off
   auto textAdvance = [&renderer, this](const char* line) {
     return renderer.getTextAdvanceX(cachedFontId, line, EpdFontFamily::REGULAR);
   };
+  const txt::PageLayout::Geometry geometry{cachedViewportHeight,
+                                           lineAdvance,
+                                           paragraphGap,
+                                           paragraphIndentWidth,
+                                           pageAlignmentForSettings(cachedParagraphAlignment),
+                                           txtLineStartsWithRtl};
   return txt::PageLayout::loadPage(buffer.get(), window.offset, window.length, offset, fileSize, linesPerPage,
-                                   viewportWidth, startsParagraph, textAdvance, outLines, nextOffset);
+                                   viewportWidth, startsParagraph, textAdvance, outLines, nextOffset, geometry);
 }
 
 void TxtReaderActivity::renderBook() {
@@ -199,10 +232,15 @@ void TxtReaderActivity::renderPage(GfxRenderer& renderer) {
   // Render text lines with alignment
   auto renderLines = [&]() {
     int y = cachedOrientedMarginTop;
+    bool firstLineOnPage = true;
     for (const auto& line : currentPageLines) {
+      y += txt::PageLayout::gapBeforeLine(line, firstLineOnPage, paragraphGap);
       if (!line.text.empty()) {
-        int x = cachedOrientedMarginLeft;
         const bool lineIsRtl = BidiUtils::startsWithRtl(line.text.c_str(), BidiUtils::RTL_PARAGRAPH_PROBE_DEPTH);
+        const auto paragraphAlignment = pageAlignmentForSettings(cachedParagraphAlignment);
+        const int indent = txt::PageLayout::indentForLine(line, paragraphIndentWidth, paragraphAlignment, lineIsRtl);
+        const int availableWidth = contentWidth - indent;
+        int x = cachedOrientedMarginLeft + indent;
         uint8_t effectiveAlignment = cachedParagraphAlignment;
         if (lineIsRtl && (effectiveAlignment == CrossPointSettings::LEFT_ALIGN ||
                           effectiveAlignment == CrossPointSettings::JUSTIFIED)) {
@@ -216,11 +254,11 @@ void TxtReaderActivity::renderPage(GfxRenderer& renderer) {
           default:
             break;
           case CrossPointSettings::CENTER_ALIGN: {
-            x = cachedOrientedMarginLeft + (contentWidth - textWidth) / 2;
+            x = cachedOrientedMarginLeft + (availableWidth - textWidth) / 2;
             break;
           }
           case CrossPointSettings::RIGHT_ALIGN: {
-            x = cachedOrientedMarginLeft + contentWidth - textWidth;
+            x = cachedOrientedMarginLeft + availableWidth - textWidth;
             break;
           }
           case CrossPointSettings::JUSTIFIED:
@@ -230,6 +268,7 @@ void TxtReaderActivity::renderPage(GfxRenderer& renderer) {
         renderer.drawText(cachedFontId, x, y, line.text.c_str());
       }
       y += lineAdvance;
+      firstLineOnPage = false;
     }
   };
 
@@ -326,12 +365,10 @@ bool TxtReaderActivity::deriveLegacySourceAnchor(uint16_t page, uint32_t& source
   HalFile index;
   if (!Storage.openFileForRead("TRS", txt->getCachePath() + "/index.bin", index)) return false;
 
-  uint8_t rawHeader[txt::INDEX_HEADER_V5_SIZE]{};
+  uint8_t rawHeader[txt::INDEX_HEADER_V6_SIZE]{};
   const int bytesRead = index.read(rawHeader, sizeof(rawHeader));
   txt::IndexHeader header;
-  if (bytesRead < 0 ||
-      !txt::parseIndexHeader(rawHeader, static_cast<size_t>(bytesRead), index.size(), header) ||
-      (header.version != txt::INDEX_VERSION_V3 && header.version != txt::INDEX_VERSION_V4)) {
+  if (bytesRead < 0 || !txt::parseIndexHeader(rawHeader, static_cast<size_t>(bytesRead), index.size(), header)) {
     return false;
   }
 
@@ -381,7 +418,7 @@ bool TxtReaderActivity::loadPageIndexCache() {
     return false;
   }
 
-  uint8_t rawHeader[txt::INDEX_HEADER_V5_SIZE]{};
+  uint8_t rawHeader[txt::INDEX_HEADER_V6_SIZE]{};
   const int bytesRead = f.read(rawHeader, sizeof(rawHeader));
   txt::IndexHeader header;
   if (bytesRead < 0 || !txt::parseIndexHeader(rawHeader, static_cast<size_t>(bytesRead), f.size(), header)) {
@@ -395,7 +432,10 @@ bool TxtReaderActivity::loadPageIndexCache() {
 
   const txt::LayoutKey layout{static_cast<int32_t>(viewportWidth), static_cast<int32_t>(linesPerPage),
                               static_cast<int32_t>(cachedFontId), static_cast<int32_t>(cachedScreenMargin),
-                              cachedParagraphAlignment, static_cast<int32_t>(lineAdvance), cachedFontPointSize};
+                              cachedParagraphAlignment, static_cast<int32_t>(lineAdvance), cachedFontPointSize,
+                              static_cast<int32_t>(cachedViewportHeight), static_cast<int32_t>(paragraphGap),
+                              static_cast<int32_t>(paragraphIndentWidth), cachedExtraParagraphSpacing,
+                              cachedParagraphIndentSpaces};
   if (!txt::matchesLayout(header, layout)) {
     LOG_DBG("TRS", "Cache layout mismatch, rebuilding");
     return false;
@@ -444,6 +484,11 @@ void TxtReaderActivity::savePageIndexCache() const {
   serialization::writePod(f, cachedParagraphAlignment);
   serialization::writePod(f, static_cast<int32_t>(lineAdvance));
   serialization::writePod(f, cachedFontPointSize);
+  serialization::writePod(f, static_cast<int32_t>(cachedViewportHeight));
+  serialization::writePod(f, static_cast<int32_t>(paragraphGap));
+  serialization::writePod(f, static_cast<int32_t>(paragraphIndentWidth));
+  serialization::writePod(f, cachedExtraParagraphSpacing);
+  serialization::writePod(f, cachedParagraphIndentSpaces);
   serialization::writePod(f, static_cast<uint32_t>(pageOffsets.size()));
 
   for (size_t offset : pageOffsets) {

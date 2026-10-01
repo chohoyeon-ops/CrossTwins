@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <BidiUtils.h>
 #include <TxtPageLayout.h>
 
 #include <algorithm>
@@ -11,13 +12,22 @@ namespace {
 using txt::PageLayout;
 using txt::PageLine;
 
+bool startsWithRtlForTest(const char* text) {
+  return BidiUtils::startsWithRtl(text, BidiUtils::RTL_PARAGRAPH_PROBE_DEPTH);
+}
+
+int renderedIndentFor(const PageLine& line, int indentWidth, PageLayout::Geometry::Alignment alignment) {
+  return PageLayout::indentForLine(line, indentWidth, alignment, startsWithRtlForTest(line.text.c_str()));
+}
+
 struct PageResult {
   std::vector<PageLine> lines;
   size_t nextOffset = 0;
   bool loaded = false;
 };
 
-PageResult loadPage(const std::string& source, size_t offset, int maxLines, int viewportWidth) {
+PageResult loadPage(const std::string& source, size_t offset, int maxLines, int viewportWidth,
+                    const PageLayout::Geometry& geometry = {}) {
   const auto window = PageLayout::readWindow(offset, source.size());
   std::vector<uint8_t> bytes(window.length);
   std::copy_n(reinterpret_cast<const uint8_t*>(source.data() + window.offset), window.length, bytes.data());
@@ -32,7 +42,8 @@ PageResult loadPage(const std::string& source, size_t offset, int maxLines, int 
     return count;
   };
   result.loaded = PageLayout::loadPage(bytes.data(), window.offset, window.length, offset, source.size(), maxLines,
-                                       viewportWidth, startsParagraph, width, result.lines, result.nextOffset);
+                                       viewportWidth, startsParagraph, width, result.lines, result.nextOffset,
+                                       geometry);
   return result;
 }
 
@@ -286,4 +297,185 @@ TEST(TxtPageLayout, MapsSourceAnchorsToGreatestPageStartAtOrBeforeAnchor) {
   EXPECT_EQ(PageLayout::pageForSourceAnchor(pageOffsets, 201), 2u);
   EXPECT_EQ(PageLayout::pageForSourceAnchor(pageOffsets, 300), 3u);
   EXPECT_EQ(PageLayout::pageForSourceAnchor(pageOffsets, 500), 3u);
+}
+
+TEST(TxtPageLayout, DefersParagraphStartWhenGapCannotFitAndOmitsGapOnNewPage) {
+  const std::string source = "first\nsecond";
+  const PageLayout::Geometry geometry{24, 10, 5, 0};
+  const auto first = loadPage(source, 0, 2, 30, geometry);
+
+  ASSERT_TRUE(first.loaded);
+  ASSERT_EQ(first.lines.size(), 1u);
+  EXPECT_EQ(first.lines[0].text, "first");
+  EXPECT_TRUE(first.lines[0].paragraphEnd);
+  EXPECT_EQ(first.nextOffset, 6u);
+  EXPECT_EQ(PageLayout::gapBeforeLine(first.lines[0], true, geometry.paragraphGap), 0);
+
+  const auto second = loadPage(source, first.nextOffset, 2, 30, geometry);
+  ASSERT_TRUE(second.loaded);
+  ASSERT_EQ(second.lines.size(), 1u);
+  EXPECT_EQ(second.lines[0].text, "second");
+  EXPECT_TRUE(second.lines[0].paragraphStart);
+  EXPECT_EQ(PageLayout::gapBeforeLine(second.lines[0], true, geometry.paragraphGap), 0);
+  EXPECT_EQ(second.nextOffset, source.size());
+}
+
+TEST(TxtPageLayout, AppliesIndentOnlyToFirstWrappedSegmentAndKeepsContinuationUnindented) {
+  const std::string source = "abcdefghijklmnopqrst";
+  const int indentWidth = PageLayout::indentWidthForSpaces(2, 2);
+  EXPECT_EQ(indentWidth, 4);
+  const PageLayout::Geometry geometry{20, 10, 5, indentWidth};
+
+  const auto first = loadPage(source, 0, 2, 8, geometry);
+  ASSERT_TRUE(first.loaded);
+  ASSERT_EQ(first.lines.size(), 2u);
+  EXPECT_EQ(first.lines[0].text, "abcd");
+  EXPECT_TRUE(first.lines[0].paragraphStart);
+  EXPECT_EQ(PageLayout::indentForLine(first.lines[0], indentWidth, PageLayout::Geometry::Alignment::JUSTIFIED, false),
+            4);
+  EXPECT_EQ(first.lines[1].text, "efghijkl");
+  EXPECT_FALSE(first.lines[1].paragraphStart);
+  EXPECT_EQ(PageLayout::indentForLine(first.lines[1], indentWidth, PageLayout::Geometry::Alignment::JUSTIFIED,
+                                      false),
+            0);
+  EXPECT_EQ(first.nextOffset, 12u);
+
+  const auto second = loadPage(source, first.nextOffset, 2, 8, geometry);
+  ASSERT_TRUE(second.loaded);
+  ASSERT_EQ(second.lines.size(), 1u);
+  EXPECT_EQ(second.lines[0].text, "mnopqrst");
+  EXPECT_FALSE(second.lines[0].paragraphStart);
+  EXPECT_EQ(PageLayout::gapBeforeLine(second.lines[0], true, geometry.paragraphGap), 0);
+  EXPECT_EQ(second.nextOffset, source.size());
+}
+
+TEST(TxtPageLayout, PreservesConsecutiveBlankParagraphsAndFitsTheFinalLineAtBoundary) {
+  const std::string source = "a\n\n\nb";
+  const PageLayout::Geometry geometry{55, 10, 5, 0};
+  const auto page = loadPage(source, 0, 5, 20, geometry);
+
+  ASSERT_TRUE(page.loaded);
+  ASSERT_EQ(page.lines.size(), 4u);
+  EXPECT_EQ(page.lines[0].text, "a");
+  EXPECT_TRUE(page.lines[1].text.empty());
+  EXPECT_TRUE(page.lines[2].text.empty());
+  EXPECT_EQ(page.lines[3].text, "b");
+  int usedHeight = 0;
+  for (size_t i = 0; i < page.lines.size(); ++i) {
+    usedHeight += PageLayout::gapBeforeLine(page.lines[i], i == 0, geometry.paragraphGap);
+    usedHeight += geometry.lineAdvance;
+  }
+  EXPECT_EQ(usedHeight, geometry.viewportHeight);
+  EXPECT_EQ(page.lines.back().sourceEnd, source.size());
+  EXPECT_EQ(page.nextOffset, source.size());
+}
+
+TEST(TxtPageLayout, ExactGapAndLineHeightFitAtThePageBoundary) {
+  const std::string source = "a\nb";
+  const PageLayout::Geometry geometry{25, 10, 5, 0};
+  const auto page = loadPage(source, 0, 2, 10, geometry);
+
+  ASSERT_TRUE(page.loaded);
+  ASSERT_EQ(page.lines.size(), 2u);
+  EXPECT_EQ(page.lines[0].text, "a");
+  EXPECT_EQ(page.lines[1].text, "b");
+  EXPECT_EQ(PageLayout::gapBeforeLine(page.lines[1], false, geometry.paragraphGap), 5);
+  EXPECT_EQ(page.nextOffset, source.size());
+}
+
+TEST(TxtPageLayout, CenterAndLtrRightKeepFullFirstLineWidthWithoutIndent) {
+  const std::string source = "abcdefghijkl";
+  const int indentWidth = PageLayout::indentWidthForSpaces(2, 2);
+  const auto alignment = PageLayout::Geometry::Alignment::CENTER;
+  const PageLayout::Geometry centered{20, 10, 0, indentWidth, alignment, startsWithRtlForTest};
+  const auto centerPage = loadPage(source, 0, 1, 8, centered);
+
+  ASSERT_TRUE(centerPage.loaded);
+  ASSERT_EQ(centerPage.lines.size(), 1u);
+  EXPECT_EQ(centerPage.lines[0].text, "abcdefgh");
+  EXPECT_EQ(centerPage.nextOffset, 8u);
+  EXPECT_EQ(renderedIndentFor(centerPage.lines[0], indentWidth, alignment), 0);
+
+  const PageLayout::Geometry rightAligned{20, 10, 0, indentWidth, PageLayout::Geometry::Alignment::RIGHT,
+                                          startsWithRtlForTest};
+  const auto rightPage = loadPage(source, 0, 1, 8, rightAligned);
+
+  ASSERT_TRUE(rightPage.loaded);
+  ASSERT_EQ(rightPage.lines.size(), 1u);
+  EXPECT_EQ(rightPage.lines[0].text, "abcdefgh");
+  EXPECT_EQ(rightPage.nextOffset, 8u);
+  EXPECT_EQ(renderedIndentFor(rightPage.lines[0], indentWidth, PageLayout::Geometry::Alignment::RIGHT), 0);
+}
+
+TEST(TxtPageLayout, NaturalAlignmentUsesTheConfiguredFirstLineIndent) {
+  const std::string source = "abcdefghijkl";
+  const int indentWidth = PageLayout::indentWidthForSpaces(2, 2);
+  const PageLayout::Geometry leftAligned{20, 10, 0, indentWidth, PageLayout::Geometry::Alignment::LEFT,
+                                         startsWithRtlForTest};
+  const auto page = loadPage(source, 0, 1, 8, leftAligned);
+
+  ASSERT_TRUE(page.loaded);
+  ASSERT_EQ(page.lines.size(), 1u);
+  EXPECT_EQ(page.lines[0].text, "abcd");
+  EXPECT_EQ(page.nextOffset, 4u);
+  EXPECT_EQ(renderedIndentFor(page.lines[0], indentWidth, PageLayout::Geometry::Alignment::LEFT), 4);
+  EXPECT_TRUE(PageLayout::isNaturalAlignment(PageLayout::Geometry::Alignment::JUSTIFIED, false));
+  EXPECT_TRUE(PageLayout::isNaturalAlignment(PageLayout::Geometry::Alignment::LEFT, true));
+}
+
+TEST(TxtPageLayout, NaturalRtlRightAlignmentUsesTheSameIndentAndWrapWidth) {
+  const std::string source = "\xD7\x90" "abcdefghij";
+  const int indentWidth = PageLayout::indentWidthForSpaces(2, 2);
+  const PageLayout::Geometry rightAligned{20, 10, 0, indentWidth, PageLayout::Geometry::Alignment::RIGHT,
+                                          startsWithRtlForTest};
+  const auto page = loadPage(source, 0, 1, 8, rightAligned);
+
+  ASSERT_TRUE(page.loaded);
+  ASSERT_EQ(page.lines.size(), 1u);
+  EXPECT_EQ(page.lines[0].text, "\xD7\x90" "abc");
+  EXPECT_EQ(page.nextOffset, 5u);
+  EXPECT_EQ(renderedIndentFor(page.lines[0], indentWidth, PageLayout::Geometry::Alignment::RIGHT), 4);
+  EXPECT_TRUE(PageLayout::isNaturalAlignment(PageLayout::Geometry::Alignment::RIGHT, true));
+}
+
+TEST(TxtPageLayout, RightAlignedNeutralPrefixUsesFinalLineDirectionForIndent) {
+  const std::string source = "(" "\xD7\x90" "ab";
+  const int indentWidth = PageLayout::indentWidthForSpaces(2, 2);
+  const PageLayout::Geometry rightAligned{10, 10, 0, indentWidth, PageLayout::Geometry::Alignment::RIGHT,
+                                          startsWithRtlForTest};
+  const auto page = loadPage(source, 0, 1, 5, rightAligned);
+
+  ASSERT_TRUE(page.loaded);
+  ASSERT_EQ(page.lines.size(), 1u);
+  EXPECT_EQ(page.lines[0].text, "(");
+  EXPECT_EQ(page.nextOffset, 1u);
+  EXPECT_EQ(renderedIndentFor(page.lines[0], indentWidth, PageLayout::Geometry::Alignment::RIGHT), 0);
+}
+
+TEST(TxtPageLayout, ParagraphGeometryKeepsSourceRangesContiguousAcrossPages) {
+  const std::string source = "one two\n\nthree four five\nsix";
+  const PageLayout::Geometry geometry{25, 10, 5, PageLayout::indentWidthForSpaces(2, 2)};
+  size_t offset = 0;
+  size_t consumedEnd = 0;
+  std::string reconstructed;
+
+  while (offset < source.size()) {
+    const auto page = loadPage(source, offset, 2, 10, geometry);
+    ASSERT_TRUE(page.loaded);
+    ASSERT_GT(page.nextOffset, offset);
+    ASSERT_EQ(page.lines.front().sourceStart, consumedEnd);
+    for (const auto& line : page.lines) {
+      EXPECT_EQ(line.sourceStart, consumedEnd);
+      EXPECT_LE(line.sourceStart, line.sourceEnd);
+      EXPECT_LE(line.sourceEnd, source.size());
+      reconstructed.append(source, line.sourceStart, line.sourceEnd - line.sourceStart);
+      consumedEnd = line.sourceEnd;
+    }
+    EXPECT_EQ(page.nextOffset, consumedEnd);
+    offset = page.nextOffset;
+  }
+
+  EXPECT_EQ(offset, source.size());
+  EXPECT_EQ(consumedEnd, source.size());
+  EXPECT_EQ(reconstructed, source);
 }

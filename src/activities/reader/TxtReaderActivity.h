@@ -23,12 +23,17 @@ class TxtReaderActivity final : public ReaderActivity {
   int linesPerPage = 0;
   int lineAdvance = 1;
   int viewportWidth = 0;
+  int cachedViewportHeight = 0;
+  int paragraphGap = 0;
+  int paragraphIndentWidth = 0;
   bool initialized = false;
 
   // Cached settings for cache validation
   int cachedFontId = 0;
   uint8_t cachedFontPointSize = 0;
   uint8_t cachedScreenMargin = 0;
+  uint8_t cachedExtraParagraphSpacing = 0;
+  uint8_t cachedParagraphIndentSpaces = 0;
   uint8_t cachedParagraphAlignment = CrossPointSettings::LEFT_ALIGN;
   int cachedOrientedMarginTop = 0;
   int cachedOrientedMarginRight = 0;
