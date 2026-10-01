@@ -28,6 +28,10 @@ const EpdGlyph* EpdFontFamily::getGlyph(const uint32_t cp, const Style style) co
   return getFont(style)->getGlyph(cp);
 }
 
+const EpdGlyph* EpdFontFamily::getGlyphExact(const uint32_t cp, const Style style) const {
+  return getFont(style)->getGlyphExact(cp);
+}
+
 bool EpdFontFamily::hasCodepoint(const uint32_t cp, const Style style) const {
   return getFont(style)->hasCodepoint(cp);
 }

@@ -7,6 +7,10 @@
 
 inline std::vector<uint8_t> sdFontTestFile;
 inline size_t sdFontTestReads = 0;
+inline bool sdFontTestReadFailure = false;
+inline bool sdFontTestOpenFailure = false;
+inline bool sdFontTestHandleFailure = false;
+
 
 struct SdFontTestEsp {
   size_t largestBlock = 200 * 1024;
@@ -23,6 +27,7 @@ class HalFile {
     return opened_ && position <= sdFontTestFile.size();
   }
   int read(void* output, size_t count) {
+    if (sdFontTestReadFailure) return 0;
     if (!opened_ || position_ > sdFontTestFile.size()) return 0;
     count = std::min(count, sdFontTestFile.size() - position_);
     std::memcpy(output, sdFontTestFile.data() + position_, count);
@@ -43,6 +48,15 @@ class HalFile {
 
 class HalStorage {
  public:
+  enum class ReadOpenResult : uint8_t { Ok, IoFailure, ResourceFailure };
+  static constexpr size_t READ_HANDLE_ALLOCATION_LIMIT = 256;
+  ReadOpenResult openFileForReadChecked(const char*, const char*, HalFile& file) {
+    if (sdFontTestHandleFailure) return ReadOpenResult::ResourceFailure;
+    if (sdFontTestOpenFailure) return ReadOpenResult::IoFailure;
+    file.open();
+    return ReadOpenResult::Ok;
+  }
+
   bool openFileForRead(const char*, const char*, HalFile& file) {
     file.open();
     return true;

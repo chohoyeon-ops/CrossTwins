@@ -1,15 +1,21 @@
 #pragma once
 
+#include <GfxRenderer.h>
 #include <Txt.h>
 #include <TxtIndexFormat.h>
 #include <TxtPageLayout.h>
+#include <TxtPageOffsets.h>
 
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "CrossPointSettings.h"
+#ifdef CROSSPOINT_TXT_READER_TEST
+#include <TxtReaderHostBase.h>
+#else
 #include "ReaderActivity.h"
+#endif
 
 class TxtReaderActivity final : public ReaderActivity {
   std::unique_ptr<Txt> txt;
@@ -18,7 +24,7 @@ class TxtReaderActivity final : public ReaderActivity {
   int totalPages = 1;
 
   // Streaming text reader - stores file offsets for each page
-  std::vector<size_t> pageOffsets;
+  txt::PageOffsets pageOffsets;
   std::vector<txt::PageLine> currentPageLines;
   int linesPerPage = 0;
   int lineAdvance = 1;
@@ -27,6 +33,10 @@ class TxtReaderActivity final : public ReaderActivity {
   int paragraphGap = 0;
   int paragraphIndentWidth = 0;
   bool initialized = false;
+  bool cacheRejected = false;
+  std::unique_ptr<SdCardFont::TxtMetricContext> metricContext;
+  GfxRenderer::TextTypography bodyTypography{GfxRenderer::TypographyPolicy::TxtDeterministic, nullptr};
+  GfxRenderer::TextResult lastTextResult;
 
   // Cached settings for cache validation
   int cachedFontId = 0;
@@ -40,13 +50,13 @@ class TxtReaderActivity final : public ReaderActivity {
   int cachedOrientedMarginBottom = 0;
   int cachedOrientedMarginLeft = 0;
 
-  void renderPage(GfxRenderer& renderer);
-  void initializeReader(GfxRenderer& renderer);
+  bool renderPage(GfxRenderer& renderer);
+  bool initializeReader(GfxRenderer& renderer);
   bool loadPageAtOffset(const GfxRenderer& renderer, size_t offset, std::vector<txt::PageLine>& outLines,
                         size_t& nextOffset);
-  void buildPageIndex(GfxRenderer& renderer);
+  bool buildPageIndex(GfxRenderer& renderer);
   bool loadPageIndexCache();
-  void savePageIndexCache() const;
+  bool savePageIndexCache() const;
   void saveProgress() const;
   bool readSavedProgress(txt::ProgressRecord& progress) const;
   bool deriveLegacySourceAnchor(uint16_t page, uint32_t& sourceAnchor) const;
@@ -58,6 +68,9 @@ class TxtReaderActivity final : public ReaderActivity {
   void renderBook() override;
 
  public:
+#ifdef CROSSPOINT_TXT_READER_TEST
+  friend struct TxtReaderTestAccess;
+#endif
   explicit TxtReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string bookPath,
                              bool allowFastInitialRefresh)
       : ReaderActivity("TxtReader", renderer, mappedInput, std::move(bookPath), allowFastInitialRefresh) {}

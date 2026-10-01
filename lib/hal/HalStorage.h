@@ -21,6 +21,12 @@ enum class UsbDriveState : uint8_t {
 
 class HalStorage {
  public:
+  enum class ReadOpenResult : uint8_t { Ok, IoFailure, ResourceFailure };
+  static constexpr size_t READ_HANDLE_ALLOCATION_LIMIT = 256;
+  // Additive fallible entry point for callers that must distinguish OOM from I/O.
+  ReadOpenResult openFileForReadChecked(const char* moduleName, const char* path, HalFile& file);
+  ReadOpenResult openFileForWriteChecked(const char* moduleName, const char* path, HalFile& file);
+
   HalStorage();
   bool begin();
   bool ready() const;

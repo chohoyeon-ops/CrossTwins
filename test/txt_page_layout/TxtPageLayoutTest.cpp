@@ -2,6 +2,7 @@
 
 #include <BidiUtils.h>
 #include <TxtPageLayout.h>
+#include <Utf8.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -26,13 +27,22 @@ struct PageResult {
   bool loaded = false;
 };
 
-PageResult loadPage(const std::string& source, size_t offset, int maxLines, int viewportWidth,
-                    const PageLayout::Geometry& geometry = {}) {
+template <typename TextAdvance>
+PageResult loadPageWithAdvance(const std::string& source, size_t offset, int maxLines, int viewportWidth,
+                               const PageLayout::Geometry& geometry, TextAdvance textAdvance) {
   const auto window = PageLayout::readWindow(offset, source.size());
   std::vector<uint8_t> bytes(window.length);
   std::copy_n(reinterpret_cast<const uint8_t*>(source.data() + window.offset), window.length, bytes.data());
   const bool startsParagraph = offset == 0 || bytes[window.pagePrefix - 1] == '\n';
   PageResult result;
+  result.loaded = PageLayout::loadPage(bytes.data(), window.offset, window.length, offset, source.size(), maxLines,
+                                       viewportWidth, startsParagraph, textAdvance, result.lines,
+                                       result.nextOffset, geometry);
+  return result;
+}
+
+PageResult loadPage(const std::string& source, size_t offset, int maxLines, int viewportWidth,
+                    const PageLayout::Geometry& geometry = {}) {
   auto width = [](const char* text) {
     // Each UTF-8 codepoint has unit width; continuation bytes add no width.
     int count = 0;
@@ -41,10 +51,22 @@ PageResult loadPage(const std::string& source, size_t offset, int maxLines, int 
     }
     return count;
   };
-  result.loaded = PageLayout::loadPage(bytes.data(), window.offset, window.length, offset, source.size(), maxLines,
-                                       viewportWidth, startsParagraph, width, result.lines, result.nextOffset,
-                                       geometry);
-  return result;
+  return loadPageWithAdvance(source, offset, maxLines, viewportWidth, geometry, width);
+}
+
+int measureWithTracking(const char* text, int tracking) {
+  int width = 0;
+  uint32_t previous = 0;
+  const auto* cursor = reinterpret_cast<const uint8_t*>(text);
+  while (const uint32_t codepoint = utf8NextCodepoint(&cursor)) {
+    if (utf8IsCombiningMark(codepoint) || BidiUtils::isTransparentMark(codepoint)) continue;
+    const bool previousSpace = previous == ' ' || previous == 0xA0 || previous == 0x3000;
+    const bool currentSpace = codepoint == ' ' || codepoint == 0xA0 || codepoint == 0x3000;
+    if (previous != 0 && !previousSpace && !currentSpace) width += tracking;
+    ++width;
+    previous = codepoint;
+  }
+  return width;
 }
 
 bool hasOnlyCompleteUtf8(const std::string& text) {
@@ -78,6 +100,24 @@ TEST(TxtPageLayout, KeepsMixedUtf8CodepointsTogether) {
   EXPECT_TRUE(page.lines[0].paragraphStart);
   EXPECT_TRUE(page.lines[0].paragraphEnd);
   EXPECT_EQ(page.nextOffset, source.size());
+}
+
+TEST(TxtPageLayout, FitsAsciiKoreanAndCjkPrefixesOnCompleteCodepoints) {
+  const std::string source = "A\xED\x95\x9C\xE6\xB0\xB4" "B";
+  const auto first = loadPage(source, 0, 1, 3);
+
+  ASSERT_TRUE(first.loaded);
+  ASSERT_EQ(first.lines.size(), 1u);
+  EXPECT_EQ(first.lines[0].text, "A\xED\x95\x9C\xE6\xB0\xB4");
+  EXPECT_TRUE(hasOnlyCompleteUtf8(first.lines[0].text));
+  EXPECT_EQ(first.lines[0].sourceEnd, 7u);
+  EXPECT_EQ(first.nextOffset, 7u);
+
+  const auto second = loadPage(source, first.nextOffset, 1, 1);
+  ASSERT_TRUE(second.loaded);
+  EXPECT_EQ(second.lines[0].text, "B");
+  EXPECT_EQ(second.lines[0].sourceStart, first.nextOffset);
+  EXPECT_EQ(second.nextOffset, source.size());
 }
 
 TEST(TxtPageLayout, CompletesFourByteCodepointAcrossEightKiBReadBoundary) {
@@ -232,6 +272,107 @@ TEST(TxtPageLayout, ConsumesWrapSpaceExactlyAndKeepsRangesContiguous) {
   EXPECT_EQ(second.lines[0].sourceStart, first.nextOffset);
   EXPECT_EQ(second.lines[0].sourceEnd, source.size());
   EXPECT_EQ(second.nextOffset, source.size());
+}
+
+TEST(TxtPageLayout, CharacterWrapKeepsAnOverflowingSpaceForTheNextLine) {
+  auto geometry = PageLayout::Geometry{};
+  geometry.wrapPolicy = PageLayout::Geometry::WrapPolicy::CHARACTER;
+  const std::string source = "ab cd";
+  const auto first = loadPage(source, 0, 1, 2, geometry);
+
+  ASSERT_TRUE(first.loaded);
+  ASSERT_EQ(first.lines.size(), 1u);
+  EXPECT_EQ(first.lines[0].text, "ab");
+  EXPECT_EQ(first.lines[0].sourceEnd, 2u);
+  EXPECT_EQ(first.nextOffset, 2u);
+
+  const auto second = loadPage(source, first.nextOffset, 1, 2, geometry);
+  ASSERT_TRUE(second.loaded);
+  EXPECT_EQ(second.lines[0].text, " c");
+  EXPECT_EQ(second.lines[0].sourceStart, first.nextOffset);
+  EXPECT_EQ(second.nextOffset, 4u);
+
+  const auto whitespaceFirst = loadPage(source, 0, 1, 2);
+  ASSERT_TRUE(whitespaceFirst.loaded);
+  EXPECT_EQ(whitespaceFirst.lines[0].sourceEnd, 3u);
+  EXPECT_EQ(whitespaceFirst.nextOffset, 3u);
+}
+
+TEST(TxtPageLayout, ExactFitLeavesTheNextWholeCodepointForTheFollowingPage) {
+  const std::string source = "abcde";
+  const auto first = loadPage(source, 0, 1, 3);
+
+  ASSERT_TRUE(first.loaded);
+  EXPECT_EQ(first.lines[0].text, "abc");
+  EXPECT_EQ(first.lines[0].sourceEnd, 3u);
+  EXPECT_EQ(first.nextOffset, 3u);
+
+  const auto second = loadPage(source, first.nextOffset, 1, 3);
+  ASSERT_TRUE(second.loaded);
+  EXPECT_EQ(second.lines[0].text, "de");
+  EXPECT_EQ(second.lines[0].sourceStart, 3u);
+  EXPECT_EQ(second.nextOffset, source.size());
+}
+
+TEST(TxtPageLayout, CorrectsAContextualWidthChangeNearTheBinarySearchBoundary) {
+  const std::string source = "abcx";
+  const auto page = loadPageWithAdvance(
+      source, 0, 1, 6, PageLayout::Geometry{}, [](const char* text) {
+        const std::string prefix(text);
+        if (prefix == "ab") return 10;
+        if (prefix == "abc") return 5;
+        if (prefix == "abcx") return 10;
+        return static_cast<int>(prefix.size());
+      });
+
+  ASSERT_TRUE(page.loaded);
+  EXPECT_EQ(page.lines[0].text, "abc");
+  EXPECT_EQ(page.nextOffset, 3u);
+}
+
+TEST(TxtPageLayout, MeasuresTheAvailableTailWhenAnExponentialProbeReachesEof) {
+  for (const std::string source : {"abcdef", "abcdefghi"}) {
+    const auto page = loadPage(source, 0, 1, 20);
+
+    ASSERT_TRUE(page.loaded);
+    ASSERT_EQ(page.lines.size(), 1u);
+    EXPECT_EQ(page.lines[0].text, source);
+    EXPECT_EQ(page.lines[0].sourceEnd, source.size());
+    EXPECT_EQ(page.nextOffset, source.size());
+  }
+}
+
+TEST(TxtPageLayout, ContinuesPastSpeculativeChunkBoundaryWithoutLosingSourceBytes) {
+  const std::string source(9000, 'a');
+  const auto unitWidth = [](const char* text) { return static_cast<int>(std::char_traits<char>::length(text)); };
+  const PageLayout::Geometry geometry{300, 1, 0, 0};
+  const auto first = loadPageWithAdvance(source, 0, 300, 33, geometry, unitWidth);
+
+  ASSERT_TRUE(first.loaded);
+  EXPECT_EQ(first.nextOffset, PageLayout::CHUNK_SIZE);
+
+  std::string reconstructed;
+  size_t consumed = 0;
+  for (const auto& line : first.lines) {
+    EXPECT_EQ(line.sourceStart, consumed);
+    ASSERT_GE(line.sourceEnd, line.sourceStart);
+    reconstructed.append(source, line.sourceStart, line.sourceEnd - line.sourceStart);
+    consumed = line.sourceEnd;
+  }
+  EXPECT_EQ(consumed, first.nextOffset);
+  EXPECT_EQ(reconstructed, source.substr(0, first.nextOffset));
+
+  const auto second = loadPageWithAdvance(source, first.nextOffset, 300, 33, geometry, unitWidth);
+  ASSERT_TRUE(second.loaded);
+  EXPECT_EQ(second.lines.front().sourceStart, first.nextOffset);
+  EXPECT_EQ(second.nextOffset, source.size());
+  for (const auto& line : second.lines) {
+    EXPECT_EQ(line.sourceStart, consumed);
+    reconstructed.append(source, line.sourceStart, line.sourceEnd - line.sourceStart);
+    consumed = line.sourceEnd;
+  }
+  EXPECT_EQ(consumed, source.size());
+  EXPECT_EQ(reconstructed, source);
 }
 
 TEST(TxtPageLayout, WideGlyphConsumesOneCompleteCodepoint) {
@@ -478,4 +619,68 @@ TEST(TxtPageLayout, ParagraphGeometryKeepsSourceRangesContiguousAcrossPages) {
   EXPECT_EQ(offset, source.size());
   EXPECT_EQ(consumedEnd, source.size());
   EXPECT_EQ(reconstructed, source);
+}
+
+TEST(TxtPageLayout, TrackingBoundaryCountMatchesRendererSpaceAndCombiningRules) {
+  const auto count = [](const char* text) {
+    return PageLayout::trackingBoundaryCount([&](int tracking) { return measureWithTracking(text, tracking); });
+  };
+
+  EXPECT_EQ(count("AB"), 1);
+  EXPECT_EQ(count("A B"), 0);
+  EXPECT_EQ(count("A\xC2\xA0" "B"), 0);
+  EXPECT_EQ(count("A\xE3\x80\x80" "B"), 0);
+  EXPECT_EQ(count("A\xCC\x81" "B"), 1);
+  EXPECT_EQ(count("\xD8\xA8\xD9\x8E" "\xD8\xAA"), 1);
+}
+
+TEST(TxtPageLayout, JustificationTrackingFitsAvailableWidthAndCapsAtInt8Range) {
+  EXPECT_EQ(PageLayout::justifiedTracking(100, 40, 10), 6);
+  EXPECT_EQ(PageLayout::justifiedTracking(100, 91, 4), 2);
+  EXPECT_EQ(PageLayout::justifiedTracking(10000, 0, 1), 127);
+  EXPECT_EQ(PageLayout::justifiedTracking(100, 40, 0), 0);
+  EXPECT_EQ(PageLayout::justifiedTracking(39, 40, 5), 0);
+
+  const int textWidth = 91;
+  const int tracking = PageLayout::justifiedTracking(100, textWidth, 4);
+  EXPECT_LE(textWidth + tracking * 4, 100);
+}
+
+TEST(TxtPageLayout, JustificationRequiresALtrSoftWrapThatIsNotPageFinal) {
+  PageLine line;
+  EXPECT_TRUE(PageLayout::shouldJustifyLine(line, false, PageLayout::Geometry::Alignment::JUSTIFIED, false));
+  EXPECT_FALSE(PageLayout::shouldJustifyLine(line, true, PageLayout::Geometry::Alignment::JUSTIFIED, false));
+  line.paragraphEnd = true;
+  EXPECT_FALSE(PageLayout::shouldJustifyLine(line, false, PageLayout::Geometry::Alignment::JUSTIFIED, false));
+  line.paragraphEnd = false;
+  EXPECT_FALSE(PageLayout::shouldJustifyLine(line, false, PageLayout::Geometry::Alignment::LEFT, false));
+  EXPECT_FALSE(PageLayout::shouldJustifyLine(line, false, PageLayout::Geometry::Alignment::JUSTIFIED, true));
+}
+
+TEST(TxtPageLayout, PaginationMarksTheSameSoftWrapAndFinalLineUsedByJustification) {
+  const auto page = loadPage("abcdef\n", 0, 2, 3);
+
+  ASSERT_TRUE(page.loaded);
+  ASSERT_EQ(page.lines.size(), 2u);
+  EXPECT_EQ(page.lines[0].text, "abc");
+  EXPECT_FALSE(page.lines[0].paragraphEnd);
+  EXPECT_TRUE(PageLayout::shouldJustifyLine(page.lines[0], false, PageLayout::Geometry::Alignment::JUSTIFIED,
+                                             false));
+  EXPECT_EQ(page.lines[1].text, "def");
+  EXPECT_TRUE(page.lines[1].paragraphEnd);
+  EXPECT_FALSE(PageLayout::shouldJustifyLine(page.lines[1], true, PageLayout::Geometry::Alignment::JUSTIFIED,
+                                              false));
+}
+
+TEST(TxtPageLayout, BinarySearchMeasuresPrefixesLogarithmicallyForLongLines) {
+  const std::string source(4096, 'a');
+  size_t measurements = 0;
+  const auto page = loadPageWithAdvance(source, 0, 1, 32, PageLayout::Geometry{}, [&measurements](const char* text) {
+    ++measurements;
+    return static_cast<int>(std::char_traits<char>::length(text));
+  });
+
+  ASSERT_TRUE(page.loaded);
+  EXPECT_EQ(page.lines[0].text, std::string(32, 'a'));
+  EXPECT_LT(measurements, 32u);
 }

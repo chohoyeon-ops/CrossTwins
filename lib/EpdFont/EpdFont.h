@@ -11,6 +11,8 @@ class EpdFont {
   void getTextDimensions(const char* string, int* w, int* h) const;
 
   const EpdGlyph* getGlyph(uint32_t cp) const;
+  // Exact bitmap lookup after a caller has resolved fallback from stable metadata.
+  const EpdGlyph* getGlyphExact(uint32_t cp) const;
 
   /// Returns true if this font covers `cp`: either via its in-RAM interval
   /// table or, for SD card fonts, via the coverageHandler that consults the

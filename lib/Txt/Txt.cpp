@@ -22,7 +22,7 @@ bool Txt::load() {
   }
 
   HalFile file;
-  if (!Storage.openFileForRead("TXT", filepath, file)) {
+  if (Storage.openFileForReadChecked("TXT", filepath.c_str(), file) != HalStorage::ReadOpenResult::Ok) {
     LOG_ERR("TXT", "Failed to open file: %s", filepath.c_str());
     return false;
   }
@@ -176,7 +176,7 @@ bool Txt::readContent(uint8_t* buffer, size_t offset, size_t length) const {
   }
 
   HalFile file;
-  if (!Storage.openFileForRead("TXT", filepath, file)) {
+  if (Storage.openFileForReadChecked("TXT", filepath.c_str(), file) != HalStorage::ReadOpenResult::Ok) {
     return false;
   }
 
@@ -185,5 +185,5 @@ bool Txt::readContent(uint8_t* buffer, size_t offset, size_t length) const {
   }
 
   size_t bytesRead = file.read(buffer, length);
-  return bytesRead > 0;
+  return bytesRead == length;
 }

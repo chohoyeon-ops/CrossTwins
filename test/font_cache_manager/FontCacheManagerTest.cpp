@@ -145,3 +145,39 @@ TEST(FontCacheManagerTest, IncrementalPrewarmRequestsAccumulation) {
   ASSERT_EQ(1, font.prewarmCallCount);
   EXPECT_TRUE(font.prewarmCalls[0].accumulate);
 }
+
+
+TEST(FontCacheManagerTest, MixedRequirementsUpgradeDuplicatesAndKeepFontStylesIsolated) {
+  SdCardFont font;
+  const std::map<int, EpdFontFamily> builtin;
+  const std::map<int, SdCardFont*> fonts{{7, &font}};
+  FontCacheManager manager(builtin, fonts, kNoTtfFonts);
+  auto scope = manager.createPrewarmScope();
+  manager.recordText("A", 7, EpdFontFamily::REGULAR, FontCacheManager::Preparation::GlyphsOnly);
+  manager.recordText("A", 7, EpdFontFamily::REGULAR);
+  manager.recordText("B", 7, EpdFontFamily::BOLD, FontCacheManager::Preparation::GlyphsOnly);
+  scope.endScanAndPrewarm();
+  ASSERT_EQ(2, font.prewarmCallCount);
+  ASSERT_NE(nullptr, findCall(font, 1)); EXPECT_TRUE(findCall(font, 1)->fullTypography);
+  ASSERT_NE(nullptr, findCall(font, 2)); EXPECT_FALSE(findCall(font, 2)->fullTypography);
+}
+
+TEST(FontCacheManagerTest, FullRequirementCanUpgradeACappedTxtScan) {
+  SdCardFont font;
+  const std::map<int, EpdFontFamily> builtin;
+  const std::map<int, SdCardFont*> fonts{{7, &font}};
+  FontCacheManager manager(builtin, fonts, kNoTtfFonts);
+  std::string body; body.reserve(512 * 3);
+  for (uint32_t cp = 0xAC00; cp < 0xAC00 + 512; ++cp) {
+    body.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+    body.push_back(static_cast<char>(0x80 | ((cp >> 6) & 63)));
+    body.push_back(static_cast<char>(0x80 | (cp & 63)));
+  }
+  auto scope = manager.createPrewarmScope();
+  manager.recordText(body.c_str(), 7, EpdFontFamily::REGULAR, FontCacheManager::Preparation::GlyphsOnly);
+  manager.recordText("AV", 7, EpdFontFamily::REGULAR);
+  scope.endScanAndPrewarm();
+  ASSERT_EQ(1, font.prewarmCallCount);
+  EXPECT_TRUE(font.prewarmCalls[0].fullTypography);
+  EXPECT_EQ('A', font.prewarmCalls[0].text[0]); EXPECT_EQ('V', font.prewarmCalls[0].text[1]);
+}

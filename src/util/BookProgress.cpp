@@ -12,6 +12,8 @@
 #include <algorithm>
 
 namespace {
+static_assert(txt::INDEX_HEADER_CURRENT_SIZE == txt::INDEX_HEADER_V6_SIZE);
+
 uint32_t readLe32(const uint8_t* p) {
   return uint32_t(p[0]) | (uint32_t(p[1]) << 8) | (uint32_t(p[2]) << 16) | (uint32_t(p[3]) << 24);
 }
@@ -62,7 +64,7 @@ int loadBookProgress(const std::string& path) {
       return -1;
     const uint32_t page = data[0] | (uint32_t(data[1]) << 8);
     HalFile index;
-    uint8_t rawHeader[txt::INDEX_HEADER_V6_SIZE]{};
+    uint8_t rawHeader[txt::INDEX_HEADER_CURRENT_SIZE]{};
     if (!Storage.openFileForRead("HOME", txt.getCachePath() + "/index.bin", index)) return -1;
     const int headerBytes = index.read(rawHeader, sizeof(rawHeader));
     txt::IndexHeader header;

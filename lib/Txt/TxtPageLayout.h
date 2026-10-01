@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -23,6 +24,8 @@ class PageLayout {
   static constexpr size_t READ_AHEAD = 5;
 
   struct Geometry {
+    enum class WrapPolicy : uint8_t { WHITESPACE_FIRST, CHARACTER };
+
     int viewportHeight = -1;
     int lineAdvance = 1;
     int paragraphGap = 0;
@@ -30,6 +33,7 @@ class PageLayout {
     enum class Alignment : uint8_t { JUSTIFIED = 0, LEFT = 1, CENTER = 2, RIGHT = 3, BOOK_STYLE = 4 };
     Alignment paragraphAlignment = Alignment::JUSTIFIED;
     bool (*startsWithRtl)(const char*) = nullptr;
+    WrapPolicy wrapPolicy = WrapPolicy::WHITESPACE_FIRST;
   };
 
   static int effectiveLineAdvance(int rendererAdvance) { return std::max(1, rendererAdvance); }
@@ -55,6 +59,20 @@ class PageLayout {
            (isRtl ? alignment == Geometry::Alignment::RIGHT : alignment == Geometry::Alignment::LEFT);
   }
 
+  static bool shouldJustifyLine(const PageLine& line, bool pageFinal, Geometry::Alignment alignment, bool isRtl) {
+    return alignment == Geometry::Alignment::JUSTIFIED && !isRtl && !line.paragraphEnd && !pageFinal;
+  }
+
+  template <typename TrackingAdvance>
+  static int trackingBoundaryCount(TrackingAdvance trackingAdvance) {
+    return std::max(0, trackingAdvance(1) - trackingAdvance(0));
+  }
+
+  static int justifiedTracking(int availableWidth, int textWidth, int boundaryCount) {
+    if (boundaryCount <= 0 || availableWidth <= textWidth) return 0;
+    return std::min(127, (availableWidth - textWidth) / boundaryCount);
+  }
+
   static int indentForLine(bool paragraphStart, int paragraphIndentWidth, Geometry::Alignment alignment, bool isRtl) {
     return paragraphStart && isNaturalAlignment(alignment, isRtl) ? std::max(0, paragraphIndentWidth) : 0;
   }
@@ -75,7 +93,8 @@ class PageLayout {
     return std::max(1, viewportHeight / effectiveLineAdvance(lineAdvance));
   }
 
-  static size_t pageForSourceAnchor(const std::vector<size_t>& pageOffsets, size_t sourceAnchor) {
+  template <typename Offsets>
+  static size_t pageForSourceAnchor(const Offsets& pageOffsets, size_t sourceAnchor) {
     if (pageOffsets.empty()) return 0;
     const auto page = std::upper_bound(pageOffsets.begin(), pageOffsets.end(), sourceAnchor);
     return page == pageOffsets.begin() ? 0 : static_cast<size_t>(page - pageOffsets.begin() - 1);
@@ -118,6 +137,7 @@ class PageLayout {
     const int paragraphGap = std::max(0, geometry.paragraphGap);
     const int paragraphIndentWidth = std::max(0, geometry.paragraphIndentWidth);
     int usedHeight = 0;
+    bool measurementFailed = false;
 
     const size_t pageStart = pageOffset - dataOffset;
     if (pageStart >= dataSize) return false;
@@ -176,59 +196,119 @@ class PageLayout {
       while (cursor < contentEnd && static_cast<int>(lines.size()) < maxLines) {
         const size_t lineStart = cursor;
         std::string text;
-        size_t lastSpace = std::string::npos;
-        bool overflow = false;
-        bool overflowOnSpace = false;
         bool stoppedAtBoundary = false;
         bool incompleteCodepoint = false;
-        while (cursor < contentEnd) {
-          if (cursor >= chunkEnd) {
-            stoppedAtBoundary = true;
-            break;
+        size_t candidateEnd = cursor;
+        size_t candidateCodepoints = 0;
+        const auto extendCandidate = [&](size_t targetCodepoints) {
+          while (candidateCodepoints < targetCodepoints && candidateEnd < contentEnd) {
+            if (candidateEnd >= chunkEnd) {
+              stoppedAtBoundary = true;
+              break;
+            }
+            const size_t charSize = codepointSize(data, candidateEnd, contentEnd, hasLf || reachesEof);
+            if (charSize == 0) {
+              incompleteCodepoint = true;
+              break;
+            }
+            if (candidateEnd - lineStart + charSize > CHUNK_SIZE + READ_AHEAD && candidateCodepoints != 0) break;
+            candidateEnd += charSize;
+            ++candidateCodepoints;
           }
-          const size_t charSize = codepointSize(data, cursor, contentEnd, hasLf || reachesEof);
-          if (charSize == 0) {
-            incompleteCodepoint = true;
-            break;
+        };
+        const auto bytesForCodepoints = [&](size_t count) {
+          size_t end = lineStart;
+          for (size_t i = 0; i < count; ++i) {
+            end += codepointSize(data, end, candidateEnd, true);
           }
-          if (text.size() + charSize > CHUNK_SIZE + READ_AHEAD && !text.empty()) {
-            overflow = true;
-            break;
-          }
-
-          text.append(reinterpret_cast<const char*>(data + cursor), charSize);
+          return end - lineStart;
+        };
+        const auto measurePrefix = [&](size_t count) {
+          if (measurementFailed) return std::numeric_limits<int>::max();
+          text.assign(reinterpret_cast<const char*>(data + lineStart), bytesForCodepoints(count));
           const int indentWidth = indentForText(startsParagraph, text.c_str(), paragraphIndentWidth, geometry);
-          const int width = textAdvance(text.c_str()) + indentWidth;
-          if (width > viewportWidth && text.size() > charSize) {
-            text.resize(text.size() - charSize);
-            overflowOnSpace = charSize == 1 && data[cursor] == ' ';
-            overflow = true;
-            break;
-          }
+          const int advance = textAdvance(text.c_str());
+          if (advance < 0) measurementFailed = true;
+          return advance < 0 ? std::numeric_limits<int>::max() : advance + indentWidth;
+        };
 
-          cursor += charSize;
-          if (width > viewportWidth) {
-            // A single glyph wider than the viewport still consumes one whole
-            // codepoint so page indexing cannot stall.
-            overflow = cursor < contentEnd;
-            break;
+        size_t fittingCodepoints = 0;
+        size_t failingCodepoints = 0;
+        const auto searchForOverflow = [&](size_t firstProbe) {
+          for (size_t probe = firstProbe; probe > fittingCodepoints;) {
+            extendCandidate(probe);
+            if (candidateCodepoints == 0) break;
+            const size_t measuredProbe = std::min(probe, candidateCodepoints);
+            if (measurePrefix(measuredProbe) > viewportWidth) {
+              failingCodepoints = measuredProbe;
+              break;
+            }
+            fittingCodepoints = measuredProbe;
+            if (candidateCodepoints < probe || candidateEnd == contentEnd || stoppedAtBoundary ||
+                incompleteCodepoint || candidateEnd - lineStart >= CHUNK_SIZE + READ_AHEAD) {
+              break;
+            }
+            probe = std::max(probe + 1, probe * 2);
           }
-          if (charSize == 1 && data[cursor - 1] == ' ') lastSpace = text.size() - 1;
-        }
+        };
 
-        if (cursor == lineStart) {
+        searchForOverflow(1);
+
+        if (candidateCodepoints == 0) {
           stopPageAtBoundary = stoppedAtBoundary || incompleteCodepoint;
           break;
         }
 
-        size_t consumedEnd = cursor;
-        if (overflow && lastSpace != std::string::npos && lastSpace > 0) {
-          text.resize(lastSpace);
-          consumedEnd = lineStart + lastSpace + 1;
-          cursor = consumedEnd;
-        } else if (overflowOnSpace) {
-          consumedEnd = cursor + 1;
-          cursor = consumedEnd;
+        while (failingCodepoints != 0) {
+          while (failingCodepoints - fittingCodepoints > 1) {
+            const size_t middle = fittingCodepoints + (failingCodepoints - fittingCodepoints) / 2;
+            if (measurePrefix(middle) <= viewportWidth) fittingCodepoints = middle;
+            else failingCodepoints = middle;
+          }
+
+          // Kerning and contextual shaping can change the final glyph when a
+          // neighboring codepoint is added, so verify the boundary locally.
+          extendCandidate(fittingCodepoints + 2);
+          const size_t correctionStart = fittingCodepoints > 2 ? fittingCodepoints - 2 : 1;
+          const size_t correctionEnd = std::min(candidateCodepoints, fittingCodepoints + 2);
+          const size_t binaryResult = fittingCodepoints;
+          for (size_t count = correctionStart; count <= correctionEnd; ++count) {
+            if (measurePrefix(count) <= viewportWidth) fittingCodepoints = std::max(fittingCodepoints, count);
+          }
+          const bool correctionPassedBinaryBoundary = fittingCodepoints > binaryResult;
+          failingCodepoints = 0;
+          if (!correctionPassedBinaryBoundary) break;
+          searchForOverflow(fittingCodepoints + 1);
+        }
+
+        if (measurementFailed) {
+          lines.clear();
+          nextOffset = pageOffset;
+          return false;
+        }
+        if (fittingCodepoints == 0) {
+          // A single glyph wider than the viewport still consumes one whole
+          // codepoint so page indexing cannot stall.
+          fittingCodepoints = 1;
+        }
+        const size_t fittedPrefixBytes = bytesForCodepoints(fittingCodepoints);
+        text.assign(reinterpret_cast<const char*>(data + lineStart), fittedPrefixBytes);
+        const bool overflow = fittedPrefixBytes < candidateEnd - lineStart || candidateEnd < contentEnd;
+        const bool overflowOnSpace = overflow && fittedPrefixBytes < candidateEnd - lineStart &&
+                                     data[lineStart + fittedPrefixBytes] == ' ';
+
+        size_t consumedEnd = lineStart + fittedPrefixBytes;
+        cursor = consumedEnd;
+        if (overflow && geometry.wrapPolicy == Geometry::WrapPolicy::WHITESPACE_FIRST) {
+          const size_t lastSpace = text.find_last_of(' ');
+          if (lastSpace != std::string::npos && lastSpace > 0) {
+            text.resize(lastSpace);
+            consumedEnd = lineStart + lastSpace + 1;
+            cursor = consumedEnd;
+          } else if (overflowOnSpace) {
+            ++consumedEnd;
+            cursor = consumedEnd;
+          }
         }
 
         const bool atInputEnd = cursor == contentEnd;
@@ -248,8 +328,14 @@ class PageLayout {
         lines.push_back(std::move(line));
         usedHeight += gapBefore + lineAdvance;
         startsParagraph = false;
+        if (paragraphEnd) {
+          cursor = terminatorEnd;
+          startsParagraph = true;
+        }
 
-        if (stoppedAtBoundary || incompleteCodepoint) {
+        const bool nextCodepointIncomplete =
+            cursor < chunkEnd && cursor < contentEnd && codepointSize(data, cursor, contentEnd, hasLf || reachesEof) == 0;
+        if (cursor >= chunkEnd || nextCodepointIncomplete) {
           stopPageAtBoundary = true;
           break;
         }

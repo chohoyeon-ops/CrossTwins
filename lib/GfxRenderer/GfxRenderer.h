@@ -1,6 +1,7 @@
 #pragma once
 
 #include <EpdFontFamily.h>
+#include <SdCardFont.h>
 #include <HalDisplay.h>
 
 namespace BidiUtils {
@@ -33,6 +34,18 @@ enum Color : uint8_t { Clear = 0x00, White = 0x01, LightGray = 0x05, DarkGray = 
 
 class GfxRenderer {
  public:
+  enum class TextMeasureMode { Layout, Rendered };
+  enum class TypographyPolicy : uint8_t { Default, TxtDeterministic };
+  struct TextTypography {
+    TypographyPolicy policy = TypographyPolicy::Default;
+    SdCardFont::TxtMetricContext* metrics = nullptr;
+  };
+  struct TextResult {
+    int advance = 0;
+    SdCardFont::TxtMetricStatus metricStatus = SdCardFont::TxtMetricStatus::Ok;
+    bool bitmapAvailable = true;
+    bool ok() const { return metricStatus == SdCardFont::TxtMetricStatus::Ok && bitmapAvailable; }
+  };
   enum RenderMode { BW, GRAYSCALE_LSB, GRAYSCALE_MSB };
 
   // Logical screen orientation from the perspective of callers
@@ -120,6 +133,11 @@ class GfxRenderer {
   // re-drawing resident glyphs is a RAM-only subset check. No-op for built-in
   // fonts.
   void ensureSdGlyphsResident(int fontId, const char* text, EpdFontFamily::Style style, bool metadataOnly) const;
+  TextResult drawTextImpl(int fontId, int x, int y, const char* text, bool black, EpdFontFamily::Style style,
+                          BidiUtils::BidiBaseDir baseDir, int8_t tracking, const TextTypography* typography) const;
+  int getTextAdvanceImpl(int fontId, const char* text, EpdFontFamily::Style style, int8_t tracking,
+                        BidiUtils::BidiBaseDir baseDir, TextMeasureMode mode, const TextTypography* typography,
+                        TextResult* result) const;
 
   void renderChar(const EpdFontFamily& fontFamily, uint32_t cp, int* x, int* y, bool pixelState,
                   EpdFontFamily::Style style) const;
@@ -136,6 +154,12 @@ class GfxRenderer {
   void fillRectImpl(int x, int y, int width, int height) const;
 
  public:
+#ifdef CROSSPOINT_RENDERER_TEST_TRACE
+  // Host integration observer; absent from firmware builds.
+  using TextTrace = void (*)(void*, uint32_t, int, int);
+  mutable TextTrace textTrace = nullptr;
+  mutable void* textTraceContext = nullptr;
+#endif
   explicit GfxRenderer(HalDisplay& halDisplay)
       : display(halDisplay), renderMode(BW), orientation(Portrait), fadingFix(false) {}
   ~GfxRenderer() { freeBwBufferChunks(); }
@@ -324,7 +348,6 @@ class GfxRenderer {
 
   // Text
   // Layout may use advance-only SD font tables; rendered measurement includes kerning and ligatures.
-  enum class TextMeasureMode { Layout, Rendered };
   int getTextWidth(int fontId, const char* text, EpdFontFamily::Style style = EpdFontFamily::REGULAR,
                    BidiUtils::BidiBaseDir baseDir = BidiUtils::BidiBaseDir::AUTO) const;
   void drawCenteredText(int fontId, int y, const char* text, bool black = true,
@@ -333,6 +356,13 @@ class GfxRenderer {
   void drawText(int fontId, int x, int y, const char* text, bool black = true,
                 EpdFontFamily::Style style = EpdFontFamily::REGULAR,
                 BidiUtils::BidiBaseDir baseDir = BidiUtils::BidiBaseDir::AUTO, int8_t tracking = 0) const;
+  TextResult drawTextWithTypography(int fontId, int x, int y, const char* text, const TextTypography& typography,
+                                    bool black = true, EpdFontFamily::Style style = EpdFontFamily::REGULAR,
+                                    BidiUtils::BidiBaseDir baseDir = BidiUtils::BidiBaseDir::AUTO,
+                                    int8_t tracking = 0) const;
+  TextResult measureTextWithTypography(int fontId, const char* text, const TextTypography& typography,
+                                       EpdFontFamily::Style style = EpdFontFamily::REGULAR, int8_t tracking = 0,
+                                       BidiUtils::BidiBaseDir baseDir = BidiUtils::BidiBaseDir::AUTO) const;
   int getSpaceWidth(int fontId, EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
   /// Returns the total inter-word advance: fp4::toPixel(spaceAdvance + kern(leftCp,' ') + kern(' ',rightCp)).
   /// Using a single snap avoids the +/-1 px rounding error that arises when space advance and kern are
