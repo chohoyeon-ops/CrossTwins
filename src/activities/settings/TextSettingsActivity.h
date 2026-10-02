@@ -19,9 +19,10 @@
 class TextSettingsActivity final : public UiTabListActivity {
  public:
   enum class Tab : uint8_t { Family, Size, Layout, Style, Count };
+  enum class Profile : uint8_t { Full, Txt };
 
   TextSettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const SdCardFontRegistry* registry,
-                       Tab initialTab = Tab::Family);
+                       Tab initialTab = Tab::Family, Profile profile = Profile::Full);
 
   void onEnter() override;
   void render(RenderLock&&) override;
@@ -62,6 +63,8 @@ class TextSettingsActivity final : public UiTabListActivity {
   void rebuildSizeList();
   void confirmLayoutRow(int row);
   void confirmStyleRow(int row);
+  int layoutRowFor(int visibleRow) const;
+  int styleRowFor(int visibleRow) const;
   // Applies the row at the given list index for the active tab (Confirm and tap share this).
   void activateRow(int row);
 
@@ -99,6 +102,7 @@ class TextSettingsActivity final : public UiTabListActivity {
   textsettings::PreviewLayout previewLayout_;  // cached preview line layout; relaid only on setting/geometry change
 
   Tab tab_;
+  Profile profile_;
   int currentFamilyIndex_ = 0;
   int currentSizeIndex_ = 0;
 

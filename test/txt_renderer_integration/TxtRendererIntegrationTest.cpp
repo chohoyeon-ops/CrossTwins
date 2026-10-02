@@ -3,6 +3,7 @@
 #include <TxtPageLayout.h>
 #include <gtest/gtest.h>
 #include <memory>
+#include <type_traits>
 #include <FontPsram.h>
 #include <Utf8.h>
 #include <builtinFonts/pretendard_10_regular.h>
@@ -14,6 +15,8 @@ struct GlyphPosition { uint32_t cp; int x; int advanceFP; };
 struct Snapshot {
   int width = 0;
   int finalAdvance = 0;
+  size_t eligibleSpaceCount = 0;
+  int minimumEligibleSpaceAdvance = 0;
   std::vector<GlyphPosition> glyphs;
   std::vector<txt::PageLine> lines;
   size_t nextOffset = 0;
@@ -61,12 +64,17 @@ class TxtRendererIntegration : public ::testing::Test {
                                     BidiUtils::BidiBaseDir::AUTO, GfxRenderer::TextMeasureMode::Rendered);
   }
 
-  Snapshot observeTxt(const char* text, SdCardFont::TxtMetricContext& context, int8_t tracking = 0, int viewport = 15) {
+  Snapshot observeTxt(const char* text, SdCardFont::TxtMetricContext& context, int8_t tracking = 0, int viewport = 15,
+                      int extraSpaceAdvance = 0) {
     Snapshot s; s.glyphs.reserve(strlen(text)); s.lines.reserve(1);
-    const GfxRenderer::TextTypography policy{GfxRenderer::TypographyPolicy::TxtDeterministic, &context};
+    const GfxRenderer::TextTypography policy{GfxRenderer::TypographyPolicy::TxtDeterministic, &context,
+                                             extraSpaceAdvance};
+    const GfxRenderer::TextTypography fitPolicy{GfxRenderer::TypographyPolicy::TxtDeterministic, &context, 0};
     const auto measured = renderer->measureTextWithTypography(FONT_ID, text, policy, EpdFontFamily::REGULAR, tracking);
     EXPECT_EQ(SdCardFont::TxtMetricStatus::Ok, measured.metricStatus);
     s.width = measured.advance;
+    s.eligibleSpaceCount = measured.eligibleSpaceCount;
+    s.minimumEligibleSpaceAdvance = measured.minimumEligibleSpaceAdvance;
     renderer->textTraceContext = &s;
     renderer->textTrace = [](void* context, uint32_t cp, int x, int advance) {
       auto& snapshot = *static_cast<Snapshot*>(context);
@@ -77,10 +85,13 @@ class TxtRendererIntegration : public ::testing::Test {
                              EpdFontFamily::REGULAR, BidiUtils::BidiBaseDir::AUTO, tracking);
     EXPECT_EQ(SdCardFont::TxtMetricStatus::Ok, drawn.metricStatus);
     EXPECT_EQ(s.width, drawn.advance); EXPECT_EQ(s.width, s.finalAdvance);
+    EXPECT_EQ(measured.eligibleSpaceCount, drawn.eligibleSpaceCount);
+    EXPECT_EQ(measured.minimumEligibleSpaceAdvance, drawn.minimumEligibleSpaceAdvance);
     renderer->textTrace = nullptr; renderer->textTraceContext = nullptr;
     EXPECT_TRUE(txt::PageLayout::loadPage(reinterpret_cast<const uint8_t*>(text), 0, strlen(text), 0, strlen(text),
          1, viewport, true, [&](const char* candidate) {
-           const auto width = renderer->measureTextWithTypography(FONT_ID, candidate, policy, EpdFontFamily::REGULAR, tracking);
+           const auto width = renderer->measureTextWithTypography(FONT_ID, candidate, fitPolicy,
+                                                                  EpdFontFamily::REGULAR, tracking);
            EXPECT_EQ(SdCardFont::TxtMetricStatus::Ok, width.metricStatus); return width.advance;
          }, s.lines, s.nextOffset));
     return s;
@@ -159,6 +170,136 @@ TEST_F(TxtRendererIntegration, MetadataContextMemoryIsBounded) {
   EXPECT_EQ(0U, SdCardFont::TxtMetricContext::CACHE_ALLOCATION_BYTES);
   EXPECT_EQ(16U, SdCardFont::TxtMetricContext::MAX_METADATA_READ_BYTES);
   RecordProperty("host_metric_context_bytes", static_cast<int>(sizeof(SdCardFont::TxtMetricContext)));
+}
+
+TEST(HalFileLifetime, EmptyMoveReplacementAndClosedOwnerDestructionMatchProduction) {
+  static_assert(!std::is_copy_constructible_v<HalFile>);
+  static_assert(!std::is_copy_assignable_v<HalFile>);
+  const auto owners = halFileTestLiveOwners;
+  const auto handles = halFileTestOpenHandles;
+  const auto releases = halFileTestOwnerReleases;
+  const auto closes = halFileTestBackendCloses;
+  {
+    HalFile empty;
+    EXPECT_FALSE(empty);
+    empty = HalFile{};
+    HalFile source;
+    source.open("first.cpfont");
+    HalFile destination(std::move(source));
+    EXPECT_FALSE(source);
+    EXPECT_TRUE(destination);
+    HalFile replacement;
+    replacement.open("second.cpfont");
+    destination = std::move(replacement);
+    EXPECT_FALSE(replacement);
+    EXPECT_EQ(handles + 1, halFileTestOpenHandles);
+    EXPECT_EQ(closes + 1, halFileTestBackendCloses);
+    destination.close();
+    destination.close();
+    EXPECT_FALSE(destination);
+    EXPECT_EQ(owners + 1, halFileTestLiveOwners);
+    EXPECT_EQ(handles, halFileTestOpenHandles);
+  }
+  EXPECT_EQ(owners, halFileTestLiveOwners);
+  EXPECT_EQ(handles, halFileTestOpenHandles);
+  EXPECT_EQ(releases + 2, halFileTestOwnerReleases);
+  EXPECT_EQ(closes + 2, halFileTestBackendCloses);
+}
+
+TEST_F(TxtRendererIntegration, FreshMetricContextOpensAndReleasesHandle) {
+  const auto owners = halFileTestLiveOwners;
+  const auto handles = halFileTestOpenHandles;
+  const auto releases = halFileTestOwnerReleases;
+  const auto closes = halFileTestBackendCloses;
+  {
+    auto context = std::make_unique<SdCardFont::TxtMetricContext>();
+    EXPECT_EQ(owners, halFileTestLiveOwners);
+    ASSERT_EQ(SdCardFont::TxtMetricStatus::Ok, font.openTxtMetrics(*context));
+    EXPECT_EQ(owners + 1, halFileTestLiveOwners);
+    EXPECT_EQ(handles + 1, halFileTestOpenHandles);
+    EXPECT_EQ(128, font.getTxtGlyphMetric(*context, 'A').glyph.advanceX);
+  }
+  EXPECT_EQ(owners, halFileTestLiveOwners);
+  EXPECT_EQ(handles, halFileTestOpenHandles);
+  EXPECT_EQ(releases + 1, halFileTestOwnerReleases);
+  EXPECT_EQ(closes + 1, halFileTestBackendCloses);
+}
+
+TEST_F(TxtRendererIntegration, UnavailableMetricContextCanRepeatAndReplaceLoadedOwner) {
+  SdCardFont unloaded;
+  auto context = std::make_unique<SdCardFont::TxtMetricContext>();
+  const auto owners = halFileTestLiveOwners;
+  const auto handles = halFileTestOpenHandles;
+  const auto closes = halFileTestBackendCloses;
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    EXPECT_EQ(SdCardFont::TxtMetricStatus::Unavailable, unloaded.openTxtMetrics(*context));
+    EXPECT_EQ(SdCardFont::TxtMetricStatus::Unavailable, unloaded.getTxtGlyphMetric(*context, 'A').status);
+    EXPECT_EQ(owners, halFileTestLiveOwners);
+  }
+  ASSERT_EQ(SdCardFont::TxtMetricStatus::Ok, font.openTxtMetrics(*context));
+  EXPECT_EQ(128, font.getTxtGlyphMetric(*context, 'A').glyph.advanceX);
+  EXPECT_EQ(SdCardFont::TxtMetricStatus::Unavailable, unloaded.openTxtMetrics(*context));
+  EXPECT_EQ(SdCardFont::TxtMetricStatus::Unavailable, font.getTxtGlyphMetric(*context, 'A').status);
+  EXPECT_EQ(owners, halFileTestLiveOwners);
+  EXPECT_EQ(handles, halFileTestOpenHandles);
+  EXPECT_EQ(closes + 1, halFileTestBackendCloses);
+  EXPECT_EQ(SdCardFont::TxtMetricStatus::Unavailable, unloaded.openTxtMetrics(*context));
+}
+
+TEST_F(TxtRendererIntegration, MetricReplacementFailureReleasesOldOwnerAndRetriesWithoutStaleCache) {
+  SdCardFont replacement;
+  ASSERT_TRUE(replacement.load("replacement.cpfont"));
+  const auto owners = halFileTestLiveOwners;
+  const auto handles = halFileTestOpenHandles;
+  auto context = std::make_unique<SdCardFont::TxtMetricContext>();
+  ASSERT_EQ(SdCardFont::TxtMetricStatus::Ok, font.openTxtMetrics(*context));
+  EXPECT_EQ(128, font.getTxtGlyphMetric(*context, 'A').glyph.advanceX);
+  const auto closes = halFileTestBackendCloses;
+  sdFontTestHandleFailure = true;
+  EXPECT_EQ(SdCardFont::TxtMetricStatus::ResourceFailure, replacement.openTxtMetrics(*context));
+  EXPECT_EQ(owners, halFileTestLiveOwners);
+  EXPECT_EQ(handles, halFileTestOpenHandles);
+  EXPECT_EQ(closes + 1, halFileTestBackendCloses);
+  EXPECT_EQ(SdCardFont::TxtMetricStatus::Unavailable, font.getTxtGlyphMetric(*context, 'A').status);
+  EXPECT_EQ(SdCardFont::TxtMetricStatus::ResourceFailure, replacement.getTxtGlyphMetric(*context, 'A').status);
+  sdFontTestHandleFailure = false;
+  sdFontTestOpenFailure = true;
+  const auto releases = halFileTestOwnerReleases;
+  EXPECT_EQ(SdCardFont::TxtMetricStatus::IoFailure, replacement.openTxtMetrics(*context));
+  EXPECT_EQ(owners, halFileTestLiveOwners);
+  EXPECT_EQ(releases + 1, halFileTestOwnerReleases);
+  EXPECT_EQ(SdCardFont::TxtMetricStatus::IoFailure, replacement.getTxtGlyphMetric(*context, 'A').status);
+  sdFontTestOpenFailure = false;
+  ASSERT_EQ(SdCardFont::TxtMetricStatus::Ok, replacement.openTxtMetrics(*context));
+  sdFontTestReads = 0;
+  EXPECT_EQ(128, replacement.getTxtGlyphMetric(*context, 'A').glyph.advanceX);
+  EXPECT_EQ(1U, sdFontTestReads);
+  const auto reopenCloses = halFileTestBackendCloses;
+  ASSERT_EQ(SdCardFont::TxtMetricStatus::Ok, replacement.openTxtMetrics(*context));
+  EXPECT_EQ(reopenCloses + 1, halFileTestBackendCloses);
+  EXPECT_EQ(owners + 1, halFileTestLiveOwners);
+  EXPECT_EQ(handles + 1, halFileTestOpenHandles);
+  context.reset();
+  EXPECT_EQ(owners, halFileTestLiveOwners);
+  EXPECT_EQ(handles, halFileTestOpenHandles);
+}
+
+TEST_F(TxtRendererIntegration, ReplacingMetricFontReleasesHandleAndClearsCachedReplacement) {
+  auto context = std::make_unique<SdCardFont::TxtMetricContext>();
+  ASSERT_EQ(SdCardFont::TxtMetricStatus::Ok, font.openTxtMetrics(*context));
+  EXPECT_EQ(SdCardFont::TxtMetricStatus::Replacement, font.getTxtGlyphMetric(*context, 0x2603).status);
+  makeTypographyFont(false);
+  SdCardFont replacement;
+  ASSERT_TRUE(replacement.load("replacement.cpfont"));
+  const auto owners = halFileTestLiveOwners;
+  const auto handles = halFileTestOpenHandles;
+  const auto closes = halFileTestBackendCloses;
+  ASSERT_EQ(SdCardFont::TxtMetricStatus::Ok, replacement.openTxtMetrics(*context));
+  EXPECT_EQ(owners, halFileTestLiveOwners);
+  EXPECT_EQ(handles, halFileTestOpenHandles);
+  EXPECT_EQ(closes + 1, halFileTestBackendCloses);
+  EXPECT_EQ(SdCardFont::TxtMetricStatus::Unavailable, font.getTxtGlyphMetric(*context, 0x2603).status);
+  EXPECT_EQ(SdCardFont::TxtMetricStatus::Missing, replacement.getTxtGlyphMetric(*context, 0x2603).status);
 }
 
 TEST_F(TxtRendererIntegration, MetadataOnlyCacheHitsMissesEvictionAndColdWarmAgree) {
@@ -316,6 +457,144 @@ TEST_F(TxtRendererIntegration, TxtTrackingKeepsOriginalSpaceBoundariesAndCombini
     EXPECT_EQ(21, replacedSpace.width); ASSERT_EQ(3U, replacedSpace.glyphs.size());
     EXPECT_EQ(0xFFFDU, replacedSpace.glyphs[1].cp); EXPECT_EQ(13, replacedSpace.glyphs[2].x);
   }
+}
+
+TEST_F(TxtRendererIntegration, TxtSpaceExpansionMeasuresAndDrawsTheSameEligibleGlyphStream) {
+  auto context = std::make_unique<SdCardFont::TxtMetricContext>();
+  ASSERT_EQ(SdCardFont::TxtMetricStatus::Ok, font.openTxtMetrics(*context));
+
+  const auto natural = observeTxt("A V", *context, 0, 24);
+  const auto partial = observeTxt("A V", *context, 0, 24, 4);
+  EXPECT_EQ(24, natural.width);
+  EXPECT_EQ(28, partial.width);
+  EXPECT_EQ(1U, partial.eligibleSpaceCount);
+  EXPECT_EQ(8, partial.minimumEligibleSpaceAdvance);
+  ASSERT_EQ(3U, partial.glyphs.size());
+  EXPECT_EQ(0, partial.glyphs[0].x);
+  EXPECT_EQ(8, partial.glyphs[1].x);
+  EXPECT_EQ(20, partial.glyphs[2].x);
+  EXPECT_EQ(natural.nextOffset, partial.nextOffset);
+
+  const auto tracked = observeTxt("A!V", *context, 2, 40, 8);
+  EXPECT_EQ(28, tracked.width);
+  EXPECT_EQ(0U, tracked.eligibleSpaceCount);
+  ASSERT_EQ(3U, tracked.glyphs.size());
+  EXPECT_EQ(10, tracked.glyphs[1].x);
+  EXPECT_EQ(20, tracked.glyphs[2].x);
+
+  GfxRenderer::TextTypography defaultPolicy;
+  defaultPolicy.extraSpaceAdvance = 8;
+  const auto defaultMeasure = renderer->measureTextWithTypography(FONT_ID, "A V", defaultPolicy);
+  const auto defaultDraw = renderer->drawTextWithTypography(FONT_ID, 0, 0, "A V", defaultPolicy);
+  EXPECT_EQ(24, defaultMeasure.advance);
+  EXPECT_EQ(defaultMeasure.advance, defaultDraw.advance);
+  EXPECT_EQ(0U, defaultMeasure.eligibleSpaceCount);
+
+  const auto capped = observeTxt("A V", *context, 0, 41, 100);
+  EXPECT_EQ(32, capped.width);
+  ASSERT_EQ(3U, capped.glyphs.size());
+  EXPECT_EQ(24, capped.glyphs[2].x);
+
+  const auto multiple = observeTxt("A  V", *context, 0, 40, 4);
+  EXPECT_EQ(40, multiple.width);
+  EXPECT_EQ(2U, multiple.eligibleSpaceCount);
+  EXPECT_EQ(8, multiple.minimumEligibleSpaceAdvance);
+  ASSERT_EQ(4U, multiple.glyphs.size());
+  EXPECT_EQ(8, multiple.glyphs[1].x);
+  EXPECT_EQ(20, multiple.glyphs[2].x);
+  EXPECT_EQ(32, multiple.glyphs[3].x);
+}
+
+TEST_F(TxtRendererIntegration, TxtSpaceExpansionRejectsEdgesMixedWhitespaceAndMissingGlyphs) {
+  auto context = std::make_unique<SdCardFont::TxtMetricContext>();
+  ASSERT_EQ(SdCardFont::TxtMetricStatus::Ok, font.openTxtMetrics(*context));
+
+  for (const char* text : {" A ", "A \xCC\x81", "AV", "A \xC2\xA0" "V", "A\xE3\x80\x80" "V",
+                           "A \xE3\x80\x80" "V", "A \tV"}) {
+    SCOPED_TRACE(text);
+    const auto natural = observeTxt(text, *context, 0, 48);
+    const auto expanded = observeTxt(text, *context, 0, 48, 8);
+    EXPECT_EQ(0U, natural.eligibleSpaceCount);
+    EXPECT_EQ(0U, expanded.eligibleSpaceCount);
+    EXPECT_EQ(natural.width, expanded.width);
+    ASSERT_EQ(natural.glyphs.size(), expanded.glyphs.size());
+    for (size_t i = 0; i < natural.glyphs.size(); ++i) EXPECT_EQ(natural.glyphs[i].x, expanded.glyphs[i].x);
+  }
+
+  const auto naturalMarked = observeTxt("A\xCC\x81" " V", *context, 0, 40);
+  const auto marked = observeTxt("A\xCC\x81" " V", *context, 0, 40, 4);
+  EXPECT_EQ(1U, marked.eligibleSpaceCount);
+  EXPECT_EQ(naturalMarked.width + 4, marked.width);
+  ASSERT_EQ(4U, marked.glyphs.size());
+  EXPECT_EQ(0, marked.glyphs[0].x);
+  EXPECT_EQ(0x301U, marked.glyphs[1].cp);
+  EXPECT_EQ(naturalMarked.glyphs[1].x, marked.glyphs[1].x);
+  EXPECT_EQ(20, marked.glyphs[3].x);
+
+  const auto transparent = observeTxt("A\xD9\x8E V", *context, 0, 40, 4);
+  EXPECT_EQ(1U, transparent.eligibleSpaceCount);
+  EXPECT_EQ(28, transparent.width);
+
+  makeTypographyFont(true, 0, true, 1, true, false, true, false);
+  ASSERT_TRUE(font.load("replacement-space.cpfont"));
+  ASSERT_EQ(SdCardFont::TxtMetricStatus::Ok, font.openTxtMetrics(*context));
+  const auto replacement = observeTxt("A V", *context, 0, 40, 8);
+  EXPECT_EQ(0U, replacement.eligibleSpaceCount);
+  EXPECT_EQ(21, replacement.width);
+  ASSERT_EQ(3U, replacement.glyphs.size());
+  EXPECT_EQ(0xFFFDU, replacement.glyphs[1].cp);
+  EXPECT_EQ(13, replacement.glyphs[2].x);
+
+  makeTypographyFont(false, 0, true, 1, true, false, true, false);
+  ASSERT_TRUE(font.load("missing-space.cpfont"));
+  ASSERT_EQ(SdCardFont::TxtMetricStatus::Ok, font.openTxtMetrics(*context));
+  const auto missing = observeTxt("A V", *context, 0, 40, 8);
+  EXPECT_EQ(0U, missing.eligibleSpaceCount);
+  EXPECT_EQ(16, missing.width);
+  ASSERT_EQ(3U, missing.glyphs.size());
+  EXPECT_EQ(8, missing.glyphs[2].x);
+
+  makeTypographyFont(true, 0, true, 1, true, false, true, true, true);
+  ASSERT_TRUE(font.load("zero-space.cpfont"));
+  ASSERT_EQ(SdCardFont::TxtMetricStatus::Ok, font.openTxtMetrics(*context));
+  const auto zero = observeTxt("A V", *context, 0, 40, 8);
+  EXPECT_EQ(0U, zero.eligibleSpaceCount);
+  EXPECT_EQ(16, zero.width);
+  ASSERT_EQ(3U, zero.glyphs.size());
+  EXPECT_EQ(8, zero.glyphs[2].x);
+}
+
+TEST_F(TxtRendererIntegration, TxtSpaceExpansionIsStableAcrossFontCacheStatesAndMetricFailuresPropagate) {
+  auto context = std::make_unique<SdCardFont::TxtMetricContext>();
+  ASSERT_EQ(SdCardFont::TxtMetricStatus::Ok, font.openTxtMetrics(*context));
+  const auto cold = observeTxt("A V", *context, 0, 24, 4);
+  warmTxt("A V");
+  context->clearCache();
+  const auto warm = observeTxt("A V", *context, 0, 24, 4);
+  warmTxt("X");
+  context->clearCache();
+  const auto unrelated = observeTxt("A V", *context, 0, 24, 4);
+  cache->releaseSdFontCaches();
+  context->clearCache();
+  const auto evicted = observeTxt("A V", *context, 0, 24, 4);
+  for (const auto* state : {&warm, &unrelated, &evicted}) {
+    EXPECT_EQ(cold.width, state->width);
+    EXPECT_EQ(cold.eligibleSpaceCount, state->eligibleSpaceCount);
+    EXPECT_EQ(cold.minimumEligibleSpaceAdvance, state->minimumEligibleSpaceAdvance);
+    ASSERT_EQ(cold.glyphs.size(), state->glyphs.size());
+    for (size_t i = 0; i < cold.glyphs.size(); ++i) EXPECT_EQ(cold.glyphs[i].x, state->glyphs[i].x);
+    EXPECT_EQ(cold.nextOffset, state->nextOffset);
+  }
+
+  const GfxRenderer::TextTypography policy{GfxRenderer::TypographyPolicy::TxtDeterministic, context.get(), 4};
+  context->clearCache();
+  sdFontTestReadFailure = true;
+  EXPECT_EQ(SdCardFont::TxtMetricStatus::IoFailure,
+            renderer->measureTextWithTypography(FONT_ID, "A V", policy).metricStatus);
+  EXPECT_EQ(SdCardFont::TxtMetricStatus::IoFailure,
+            renderer->drawTextWithTypography(FONT_ID, 0, 0, "A V", policy).metricStatus);
+  sdFontTestReadFailure = false;
+  ASSERT_TRUE(renderer->measureTextWithTypography(FONT_ID, "A V", policy).ok());
 }
 
 TEST_F(TxtRendererIntegration, TxtBitmapFailureCannotChangeCanonicalPositionsOrOverlayGeometry) {

@@ -36,6 +36,16 @@ class PageLayout {
     WrapPolicy wrapPolicy = WrapPolicy::WHITESPACE_FIRST;
   };
 
+  enum class HyphenationStatus : uint8_t { NoCandidates, Candidates, Failure };
+  using BreakFinder = HyphenationStatus (*)(void*, const char*, size_t, uint8_t*, size_t, size_t&);
+  struct Hyphenation {
+    void* context;
+    BreakFinder findBreakOffsets;
+    constexpr Hyphenation(void* callbackContext = nullptr, BreakFinder callback = nullptr)
+        : context(callbackContext), findBreakOffsets(callback) {}
+  };
+  static constexpr size_t MAX_HYPHENATION_WORD_BYTES = 64;
+
   static int effectiveLineAdvance(int rendererAdvance) { return std::max(1, rendererAdvance); }
 
   static int indentWidthForSpaces(int fontSpaceWidth, uint8_t spaces) {
@@ -126,7 +136,8 @@ class PageLayout {
   template <typename TextAdvance>
   static bool loadPage(const uint8_t* data, size_t dataOffset, size_t dataSize, size_t pageOffset, size_t fileSize,
                        int maxLines, int viewportWidth, bool startsParagraph, TextAdvance textAdvance,
-                       std::vector<PageLine>& lines, size_t& nextOffset, const Geometry& geometry) {
+                       std::vector<PageLine>& lines, size_t& nextOffset, const Geometry& geometry,
+                       Hyphenation hyphenation = {}) {
     lines.clear();
     nextOffset = pageOffset;
     if (!data || pageOffset >= fileSize || dataOffset > pageOffset || maxLines <= 0) return false;
@@ -299,7 +310,74 @@ class PageLayout {
 
         size_t consumedEnd = lineStart + fittedPrefixBytes;
         cursor = consumedEnd;
-        if (overflow && geometry.wrapPolicy == Geometry::WrapPolicy::WHITESPACE_FIRST) {
+        bool usedHyphenCandidate = false;
+        if (overflow && candidateCodepoints > fittingCodepoints && hyphenation.findBreakOffsets &&
+            fittingCodepoints != 0) {
+          const size_t overflowByte = lineStart + fittedPrefixBytes;
+          const auto isAsciiLetter = [](uint8_t value) {
+            return (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z');
+          };
+          if (overflowByte < contentEnd && isAsciiLetter(data[overflowByte])) {
+            size_t wordStart = overflowByte;
+            while (wordStart > lineStart && isAsciiLetter(data[wordStart - 1])) --wordStart;
+            size_t wordEnd = wordStart;
+            while (wordEnd < contentEnd && isAsciiLetter(data[wordEnd])) ++wordEnd;
+            const size_t wordLength = wordEnd - wordStart;
+            const auto disallowedNeighbor = [](uint8_t value) {
+              return (value >= '0' && value <= '9') || value == '\'' || value == '-' || value >= 0x80;
+            };
+            const bool completeWord = wordEnd < contentEnd || hasLf || reachesEof;
+            const bool mixedOrCompound =
+                (wordStart > lineStart && disallowedNeighbor(data[wordStart - 1])) ||
+                (wordEnd < contentEnd && disallowedNeighbor(data[wordEnd]));
+            if (wordLength > 0 && wordLength <= MAX_HYPHENATION_WORD_BYTES && completeWord && !mixedOrCompound) {
+              uint8_t breakOffsets[MAX_HYPHENATION_WORD_BYTES];
+              size_t breakCount = 0;
+              const HyphenationStatus status = hyphenation.findBreakOffsets(
+                  hyphenation.context, reinterpret_cast<const char*>(data + wordStart), wordLength, breakOffsets,
+                  MAX_HYPHENATION_WORD_BYTES, breakCount);
+              if (status == HyphenationStatus::Failure ||
+                  (status == HyphenationStatus::NoCandidates && breakCount != 0) ||
+                  (status == HyphenationStatus::Candidates && (breakCount == 0 || breakCount > MAX_HYPHENATION_WORD_BYTES))) {
+                measurementFailed = true;
+              } else if (status == HyphenationStatus::Candidates) {
+                size_t previousBreak = 0;
+                for (size_t i = 0; i < breakCount; ++i) {
+                  const size_t breakOffset = breakOffsets[i];
+                  if (breakOffset <= previousBreak || breakOffset >= wordLength) {
+                    measurementFailed = true;
+                    break;
+                  }
+                  previousBreak = breakOffset;
+                }
+                for (size_t i = breakCount; i > 0 && !measurementFailed; --i) {
+                  const size_t breakOffset = breakOffsets[i - 1];
+                  text.assign(reinterpret_cast<const char*>(data + lineStart), wordStart - lineStart + breakOffset);
+                  text.push_back('-');
+                  const int indentWidth = indentForText(startsParagraph, text.c_str(), paragraphIndentWidth, geometry);
+                  const int advance = textAdvance(text.c_str());
+                  if (advance < 0) {
+                    measurementFailed = true;
+                    break;
+                  }
+                  if (advance + indentWidth <= viewportWidth) {
+                    consumedEnd = wordStart + breakOffset;
+                    cursor = consumedEnd;
+                    usedHyphenCandidate = true;
+                    break;
+                  }
+                }
+              }
+            }
+          }
+        }
+        if (measurementFailed) {
+          lines.clear();
+          nextOffset = pageOffset;
+          return false;
+        }
+        if (!usedHyphenCandidate) text.assign(reinterpret_cast<const char*>(data + lineStart), fittedPrefixBytes);
+        if (!usedHyphenCandidate && overflow && geometry.wrapPolicy == Geometry::WrapPolicy::WHITESPACE_FIRST) {
           const size_t lastSpace = text.find_last_of(' ');
           if (lastSpace != std::string::npos && lastSpace > 0) {
             text.resize(lastSpace);

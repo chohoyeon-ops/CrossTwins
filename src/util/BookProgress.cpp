@@ -12,7 +12,7 @@
 #include <algorithm>
 
 namespace {
-static_assert(txt::INDEX_HEADER_CURRENT_SIZE == txt::INDEX_HEADER_V6_SIZE);
+static_assert(txt::INDEX_HEADER_CURRENT_SIZE == txt::INDEX_HEADER_V9_SIZE);
 
 uint32_t readLe32(const uint8_t* p) {
   return uint32_t(p[0]) | (uint32_t(p[1]) << 8) | (uint32_t(p[2]) << 16) | (uint32_t(p[3]) << 24);

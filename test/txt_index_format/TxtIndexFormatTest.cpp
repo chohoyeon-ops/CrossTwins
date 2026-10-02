@@ -20,16 +20,18 @@ std::vector<uint8_t> makeHeader(uint8_t version, uint32_t fileSize, uint32_t pag
   txt::writeLe32(data.data() + 21, 12);
   data[25] = 2;
   if (version == txt::INDEX_VERSION_V5 || version == txt::INDEX_VERSION_V6 || version == txt::INDEX_VERSION_V7 ||
-      version == txt::INDEX_VERSION_V8) {
+      version == txt::INDEX_VERSION_V8 || version == txt::INDEX_VERSION_V9) {
     txt::writeLe32(data.data() + 26, 20);
     data[30] = 18;
-    if (version == txt::INDEX_VERSION_V6 || version == txt::INDEX_VERSION_V7 || version == txt::INDEX_VERSION_V8) {
+    if (version == txt::INDEX_VERSION_V6 || version == txt::INDEX_VERSION_V7 || version == txt::INDEX_VERSION_V8 ||
+        version == txt::INDEX_VERSION_V9) {
       txt::writeLe32(data.data() + 31, 480);
       txt::writeLe32(data.data() + 35, 10);
       txt::writeLe32(data.data() + 39, 20);
       data[43] = 1;
       data[44] = 2;
       txt::writeLe32(data.data() + 45, pageCount);
+      if (version == txt::INDEX_VERSION_V9) data[49] = 1;
     } else {
       txt::writeLe32(data.data() + 31, pageCount);
     }
@@ -45,9 +47,10 @@ bool parseWithPageStorage(const std::vector<uint8_t>& headerBytes, uint32_t page
 }
 }  // namespace
 
-TEST(TxtIndexFormat, ParsesV3ThroughV8PageCountLocations) {
+TEST(TxtIndexFormat, ParsesV3ThroughV9PageCountLocations) {
   for (const uint8_t version : {txt::INDEX_VERSION_V3, txt::INDEX_VERSION_V4, txt::INDEX_VERSION_V5,
-                                txt::INDEX_VERSION_V6, txt::INDEX_VERSION_V7, txt::INDEX_VERSION_V8}) {
+                                txt::INDEX_VERSION_V6, txt::INDEX_VERSION_V7, txt::INDEX_VERSION_V8,
+                                txt::INDEX_VERSION_V9}) {
     const auto raw = makeHeader(version, 1000, 3);
     txt::IndexHeader header;
     ASSERT_TRUE(parseWithPageStorage(raw, 3, header));
@@ -61,13 +64,14 @@ TEST(TxtIndexFormat, ParsesV3ThroughV8PageCountLocations) {
       EXPECT_EQ(header.fontPointSize, 18);
     }
     if (version == txt::INDEX_VERSION_V6 || version == txt::INDEX_VERSION_V7 ||
-        version == txt::INDEX_VERSION_V8) {
+        version == txt::INDEX_VERSION_V8 || version == txt::INDEX_VERSION_V9) {
       EXPECT_EQ(header.viewportHeight, 480);
       EXPECT_EQ(header.paragraphGap, 10);
       EXPECT_EQ(header.paragraphIndentWidth, 20);
       EXPECT_EQ(header.extraParagraphSpacing, 1);
       EXPECT_EQ(header.paragraphIndentSpaces, 2);
     }
+    if (version == txt::INDEX_VERSION_V9) EXPECT_EQ(header.hyphenationEnabled, 1);
   }
 }
 
@@ -85,6 +89,10 @@ TEST(TxtIndexFormat, RejectsTruncatedHeadersAndOffsetTables) {
   EXPECT_FALSE(txt::parseIndexHeader(v8.data(), v8.size() - 1, v8.size() + 8, header));
   EXPECT_FALSE(txt::parseIndexHeader(v8.data(), v8.size(), v8.size() + 4, header));
 
+  auto v9 = makeHeader(txt::INDEX_VERSION_V9, 1000, 2);
+  EXPECT_FALSE(txt::parseIndexHeader(v9.data(), v9.size() - 1, v9.size() + 8, header));
+  EXPECT_FALSE(txt::parseIndexHeader(v9.data(), v9.size(), v9.size() + 4, header));
+
   auto v4 = makeHeader(txt::INDEX_VERSION_V4, 1000, 2);
   EXPECT_FALSE(txt::parseIndexHeader(v4.data(), v4.size(), v4.size() + 4, header));
 }
@@ -96,7 +104,7 @@ TEST(TxtIndexFormat, RejectsInvalidMagicVersionAndPageBounds) {
   EXPECT_FALSE(parseWithPageStorage(raw, 2, header));
 
   raw = makeHeader(txt::INDEX_VERSION_V5, 1000, 2);
-  raw[4] = 9;
+  raw[4] = 10;
   EXPECT_FALSE(parseWithPageStorage(raw, 2, header));
 
   raw = makeHeader(txt::INDEX_VERSION_V6, 1000, 0);
@@ -107,10 +115,10 @@ TEST(TxtIndexFormat, RejectsInvalidMagicVersionAndPageBounds) {
 }
 
 TEST(TxtIndexFormat, LayoutIdentityInvalidatesGeometryTypographyAndEffectiveSpacing) {
-  const auto raw = makeHeader(txt::INDEX_VERSION_V8, 1000, 3);
+  const auto raw = makeHeader(txt::INDEX_VERSION_V9, 1000, 3);
   txt::IndexHeader header;
   ASSERT_TRUE(parseWithPageStorage(raw, 3, header));
-  const txt::LayoutKey key{420, 24, 17, 12, 2, 20, 18, 480, 10, 20, 1, 2};
+  const txt::LayoutKey key{420, 24, 17, 12, 2, 20, 18, 480, 10, 20, 1, 2, 1};
   EXPECT_TRUE(txt::matchesLayout(header, key));
   EXPECT_FALSE(txt::matchesLayout(header, {419, 24, 17, 12, 2, 20, 18, 480, 10, 20, 1, 2}));
   EXPECT_FALSE(txt::matchesLayout(header, {420, 23, 17, 12, 2, 20, 18, 480, 10, 20, 1, 2}));
@@ -123,6 +131,7 @@ TEST(TxtIndexFormat, LayoutIdentityInvalidatesGeometryTypographyAndEffectiveSpac
   EXPECT_FALSE(txt::matchesLayout(header, {420, 24, 17, 12, 2, 20, 18, 480, 10, 21, 1, 2}));
   EXPECT_FALSE(txt::matchesLayout(header, {420, 24, 17, 12, 2, 20, 18, 480, 10, 20, 0, 2}));
   EXPECT_FALSE(txt::matchesLayout(header, {420, 24, 17, 12, 2, 20, 18, 480, 10, 20, 1, 3}));
+  EXPECT_FALSE(txt::matchesLayout(header, {420, 24, 17, 12, 2, 20, 18, 480, 10, 20, 1, 2, 0}));
   const auto oldRaw = makeHeader(txt::INDEX_VERSION_V5, 1000, 3);
   txt::IndexHeader oldHeader;
   ASSERT_TRUE(parseWithPageStorage(oldRaw, 3, oldHeader));
@@ -137,17 +146,21 @@ TEST(TxtIndexFormat, LayoutIdentityInvalidatesGeometryTypographyAndEffectiveSpac
   txt::IndexHeader phase45Header;
   ASSERT_TRUE(parseWithPageStorage(phase45Raw, 3, phase45Header));
   EXPECT_FALSE(txt::matchesLayout(phase45Header, key));
+  const auto phase5Raw = makeHeader(txt::INDEX_VERSION_V8, 1000, 3);
+  txt::IndexHeader phase5Header;
+  ASSERT_TRUE(parseWithPageStorage(phase5Raw, 3, phase5Header));
+  EXPECT_FALSE(txt::matchesLayout(phase5Header, key));
 }
 
 TEST(TxtIndexFormat, LegacyV6AndV7IndexesAreStaleButSupportProgressMigration) {
-  const txt::LayoutKey currentLayout{420, 24, 17, 12, 2, 20, 18, 480, 10, 20, 1, 2};
+  const txt::LayoutKey currentLayout{420, 24, 17, 12, 2, 20, 18, 480, 10, 20, 1, 2, 1};
   const std::array<uint32_t, 4> offsets{0, 10, 20, 30};
   const auto readOffset = [&offsets](uint32_t page, uint32_t& offset) {
     if (page >= offsets.size()) return false;
     offset = offsets[page];
     return true;
   };
-  for (const uint8_t version : {txt::INDEX_VERSION_V6, txt::INDEX_VERSION_V7}) {
+  for (const uint8_t version : {txt::INDEX_VERSION_V6, txt::INDEX_VERSION_V7, txt::INDEX_VERSION_V8}) {
     const auto raw = makeHeader(version, 40, 4);
     txt::IndexHeader header;
     ASSERT_TRUE(parseWithPageStorage(raw, 4, header));

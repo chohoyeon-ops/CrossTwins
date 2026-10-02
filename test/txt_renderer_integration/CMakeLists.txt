@@ -13,6 +13,10 @@ add_executable(TxtRendererIntegrationTest
   ${REPO_ROOT}/lib/Utf8/Utf8.cpp
   ${REPO_ROOT}/lib/MiniBidi/BidiUtils.cpp
   ${REPO_ROOT}/lib/MiniBidi/minibidi.c
+  ${REPO_ROOT}/lib/Epub/Epub/hyphenation/Hyphenator.cpp
+  ${REPO_ROOT}/lib/Epub/Epub/hyphenation/LanguageRegistry.cpp
+  ${REPO_ROOT}/lib/Epub/Epub/hyphenation/LiangHyphenation.cpp
+  ${REPO_ROOT}/lib/Epub/Epub/hyphenation/HyphenationCommon.cpp
 )
 target_include_directories(TxtRendererIntegrationTest PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/stubs
@@ -20,6 +24,7 @@ target_include_directories(TxtRendererIntegrationTest PRIVATE
   ${REPO_ROOT}/lib/Utf8 ${REPO_ROOT}/lib/MiniBidi
   ${REPO_ROOT}/src
   ${REPO_ROOT}/lib/Memory ${REPO_ROOT}/lib/Txt
+  ${REPO_ROOT}/lib/Epub
 )
 target_compile_definitions(TxtRendererIntegrationTest PRIVATE CROSSPOINT_RENDERER_TEST_TRACE=1 CROSSPOINT_TXT_READER_TEST=1)
 target_compile_options(TxtRendererIntegrationTest PRIVATE -fno-exceptions)

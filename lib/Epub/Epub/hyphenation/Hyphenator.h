@@ -4,10 +4,14 @@
 #include <string>
 #include <vector>
 
+#include "LiangHyphenation.h"
+
 class LanguageHyphenator;
 
 class Hyphenator {
  public:
+  enum class AsciiPatternResult : uint8_t { NoCandidates, Candidates, Failure };
+
   struct BreakInfo {
     size_t byteOffset;            // Byte position inside the UTF-8 word where a break may occur.
     bool requiresInsertedHyphen;  // true = a visible '-' must be rendered at the break (pattern/fallback breaks).
@@ -34,6 +38,10 @@ class Hyphenator {
   //      pattern breaks were found). Used as a last resort to prevent a single oversized
   //      word from overflowing the page width.
   static std::vector<BreakInfo> breakOffsets(const std::string& word, bool includeFallback);
+
+  // Fixed-English, allocation-free-on-the-caller-side path for bounded TXT words.
+  static AsciiPatternResult breakEnglishAsciiInto(const char* word, size_t wordLength, LiangWorkspace& workspace,
+                                                  uint8_t* output, size_t outputCapacity, size_t& outputCount);
 
   // Provide a publication-level language hint (e.g. "en", "en-US", "ru") used to select hyphenation rules.
   static void setPreferredLanguage(const std::string& lang);

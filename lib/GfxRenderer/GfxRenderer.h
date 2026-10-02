@@ -17,6 +17,7 @@ class SdCardFont;
 class TtfEpdFont;
 
 #include <array>
+#include <cstddef>
 #include <cstring>
 #include <map>
 #include <string>
@@ -39,9 +40,15 @@ class GfxRenderer {
   struct TextTypography {
     TypographyPolicy policy = TypographyPolicy::Default;
     SdCardFont::TxtMetricContext* metrics = nullptr;
+    // Additional whole-pixel advance per eligible TXT ASCII space.
+    int extraSpaceAdvance = 0;
   };
   struct TextResult {
     int advance = 0;
+    // Eligible content-surrounded ASCII spaces in the visual stream.
+    size_t eligibleSpaceCount = 0;
+    // Minimum positive natural rounded advance among those spaces.
+    int minimumEligibleSpaceAdvance = 0;
     SdCardFont::TxtMetricStatus metricStatus = SdCardFont::TxtMetricStatus::Ok;
     bool bitmapAvailable = true;
     bool ok() const { return metricStatus == SdCardFont::TxtMetricStatus::Ok && bitmapAvailable; }

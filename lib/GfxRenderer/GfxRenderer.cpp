@@ -23,6 +23,12 @@ constexpr int trackingBetween(const uint32_t leftCp, const uint32_t rightCp, con
   return leftCp == 0 || isSpace(leftCp) || isSpace(rightCp) ? 0 : tracking;
 }
 
+constexpr bool isWhitespaceCodepoint(const uint32_t cp) {
+  return (cp >= 0x0009 && cp <= 0x000D) || cp == 0x0020 || cp == 0x0085 || cp == 0x00A0 || cp == 0x1680 ||
+         (cp >= 0x2000 && cp <= 0x200A) || cp == 0x2028 || cp == 0x2029 || cp == 0x202F || cp == 0x205F ||
+         cp == 0x3000;
+}
+
 /**
  * Resolves the requested style to the best available style in the given SD card font.
  * Falls back gracefully when the font lacks the requested variant.
@@ -704,6 +710,30 @@ class GlyphWalker {
     if (!cp) return false;
     movement = {};
     movement.combining = utf8IsCombiningMark(cp) || BidiUtils::isTransparentMark(cp);
+    bool currentSpaceInEligibleRun = false;
+    if (txt && !movement.combining && isWhitespaceCodepoint(cp)) {
+      if (whitespaceRunRemaining == 0) {
+        size_t runLength = 1;
+        bool asciiSpacesOnly = cp == ' ';
+        bool followedByContent = false;
+        const char* lookahead = text;
+        while (const uint32_t nextCp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&lookahead))) {
+          if (isWhitespaceCodepoint(nextCp)) {
+            ++runLength;
+            asciiSpacesOnly = asciiSpacesOnly && nextCp == ' ';
+          } else if (!utf8IsCombiningMark(nextCp) && !BidiUtils::isTransparentMark(nextCp)) {
+            followedByContent = true;
+            break;
+          }
+        }
+        whitespaceRunRemaining = runLength;
+        whitespaceRunEligible = previousCp != 0 && !isWhitespaceCodepoint(previousCp) && followedByContent &&
+                                asciiSpacesOnly;
+      }
+      currentSpaceInEligibleRun = whitespaceRunEligible && cp == ' ';
+      --whitespaceRunRemaining;
+      if (whitespaceRunRemaining == 0) whitespaceRunEligible = false;
+    }
     if (!movement.combining && !txt) cp = font.applyLigatures(cp, text, style);
     movement.codepoint = cp;
     movement.drawCodepoint = cp;
@@ -735,16 +765,35 @@ class GlyphWalker {
     if (previousCp != 0) {
       const int32_t kern = txt ? 0 : font.getKerning(previousCp, cp, style);
       cursor += fp4::toPixel(previousAdvance + kern) + trackingBetween(previousCp, cp, tracking);
+      if (txt && previousSpaceEligible) {
+        const int requestedExtra = std::max(0, typography->extraSpaceAdvance);
+        cursor += std::min(requestedExtra, previousSpaceNaturalAdvance);
+      }
     }
     movement.x = cursor;
     previousAdvance = movement.hasGlyph ? movement.glyph.advanceX : 0;
     if ((style & (EpdFontFamily::SUP | EpdFontFamily::SUB)) != 0) previousAdvance = (previousAdvance + 1) / 2;
     movement.advanceFP = previousAdvance;
+    previousSpaceEligible = false;
+    previousSpaceNaturalAdvance = 0;
+    if (txt && currentSpaceInEligibleRun && movement.hasGlyph && movement.drawCodepoint == ' ') {
+      const int naturalAdvance = fp4::toPixel(previousAdvance);
+      if (naturalAdvance > 0) {
+        previousSpaceEligible = true;
+        previousSpaceNaturalAdvance = naturalAdvance;
+        ++eligibleSpaceCount;
+        if (minimumEligibleSpaceAdvance == 0 || naturalAdvance < minimumEligibleSpaceAdvance) {
+          minimumEligibleSpaceAdvance = naturalAdvance;
+        }
+      }
+    }
     previousCp = cp;
     return true;
   }
   int finalAdvance() const { return cursor + fp4::toPixel(previousAdvance); }
   SdCardFont::TxtMetricStatus metricStatus() const { return status; }
+  size_t getEligibleSpaceCount() const { return eligibleSpaceCount; }
+  int getMinimumEligibleSpaceAdvance() const { return minimumEligibleSpaceAdvance; }
 
  private:
   const EpdFontFamily& font;
@@ -758,6 +807,12 @@ class GlyphWalker {
   uint32_t previousCp = 0;
   int32_t previousAdvance = 0;
   int cursor = 0;
+  size_t whitespaceRunRemaining = 0;
+  bool whitespaceRunEligible = false;
+  bool previousSpaceEligible = false;
+  int previousSpaceNaturalAdvance = 0;
+  size_t eligibleSpaceCount = 0;
+  int minimumEligibleSpaceAdvance = 0;
   SdCardFont::TxtMetricStatus status = SdCardFont::TxtMetricStatus::Ok;
 };
 }  // namespace
@@ -870,6 +925,8 @@ GfxRenderer::TextResult GfxRenderer::drawTextImpl(const int fontId, const int x,
 #endif
   }
   result.advance = walker.finalAdvance();
+  result.eligibleSpaceCount = walker.getEligibleSpaceCount();
+  result.minimumEligibleSpaceAdvance = walker.getMinimumEligibleSpaceAdvance();
   result.metricStatus = walker.metricStatus();
 #ifdef CROSSPOINT_RENDERER_TEST_TRACE
   if (textTrace) textTrace(textTraceContext, 0, result.advance, 0);
@@ -2238,6 +2295,8 @@ int GfxRenderer::getTextAdvanceImpl(const int fontId, const char* text, EpdFontF
   while (walker.next(movement)) {}
   if (result) {
     result->advance = walker.finalAdvance();
+    result->eligibleSpaceCount = walker.getEligibleSpaceCount();
+    result->minimumEligibleSpaceAdvance = walker.getMinimumEligibleSpaceAdvance();
     result->metricStatus = walker.metricStatus();
   }
   return walker.metricStatus() == SdCardFont::TxtMetricStatus::Ok ? walker.finalAdvance() : -1;

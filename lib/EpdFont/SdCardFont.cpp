@@ -1684,7 +1684,7 @@ uint8_t SdCardFont::resolveStyleMask(uint8_t styleMask) const {
 // --- On-demand glyph loading (overflow buffer) ---
 
 SdCardFont::TxtMetricStatus SdCardFont::openTxtMetrics(TxtMetricContext& context) const {
-  context.file.close();
+  context.file = HalFile{};
   context.clearCache();
   context.owner = this;
   context.generation = metricGeneration_;

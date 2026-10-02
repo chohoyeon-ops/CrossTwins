@@ -33,6 +33,36 @@ struct LiangWordConfig {
       : isLetter(letterFn), toLower(lowerFn), minPrefix(prefix), minSuffix(suffix) {}
 };
 
+// Caller-owned storage for the fixed-size Liang evaluator. On ESP32-C3 this is
+// about 1.2 KiB and can be reused across TXT words without per-word allocation.
+struct LiangWorkspace {
+  static constexpr size_t MAX_WORD_BYTES = 160;
+  static constexpr size_t MAX_WORD_CHARS = 70;
+
+  uint8_t bytes[MAX_WORD_BYTES];
+  size_t charByteOffsets[MAX_WORD_CHARS];
+  int32_t byteToCharIndex[MAX_WORD_BYTES];
+  uint8_t scores[MAX_WORD_CHARS];
+  size_t byteLen = 0;
+  size_t charCount_ = 0;
+
+  bool empty() const { return byteLen == 0; }
+  size_t charCount() const { return charCount_; }
+};
+
+enum class LiangBreakStatus : uint8_t { Ok, InvalidInput, OutputTooSmall, InvalidPatterns };
+
 // Shared Liang pattern evaluator used by every language-specific hyphenator.
 std::vector<size_t> liangBreakIndexes(const std::vector<CodepointInfo>& cps,
                                       const SerializedHyphenationPatterns& patterns, const LiangWordConfig& config);
+
+// Bounded variants share the same trie scoring core. Output indexes are byte
+// offsets for the ASCII form and codepoint indexes for the CodepointInfo form.
+LiangBreakStatus liangBreakIndexesInto(const CodepointInfo* cps, size_t cpCount,
+                                       const SerializedHyphenationPatterns& patterns, const LiangWordConfig& config,
+                                       LiangWorkspace& workspace, uint8_t* output, size_t outputCapacity,
+                                       size_t& outputCount);
+LiangBreakStatus liangBreakIndexesAsciiInto(const char* word, size_t wordLength,
+                                            const SerializedHyphenationPatterns& patterns,
+                                            const LiangWordConfig& config, LiangWorkspace& workspace,
+                                            uint8_t* output, size_t outputCapacity, size_t& outputCount);

@@ -5,6 +5,7 @@
 #include <TxtIndexFormat.h>
 #include <TxtPageLayout.h>
 #include <TxtPageOffsets.h>
+#include <Epub/hyphenation/Hyphenator.h>
 
 #include <memory>
 #include <string>
@@ -34,7 +35,10 @@ class TxtReaderActivity final : public ReaderActivity {
   int paragraphIndentWidth = 0;
   bool initialized = false;
   bool cacheRejected = false;
+  bool hasPendingSourceAnchor = false;
+  size_t pendingSourceAnchor = 0;
   std::unique_ptr<SdCardFont::TxtMetricContext> metricContext;
+  std::unique_ptr<LiangWorkspace> hyphenationWorkspace;
   GfxRenderer::TextTypography bodyTypography{GfxRenderer::TypographyPolicy::TxtDeterministic, nullptr};
   GfxRenderer::TextResult lastTextResult;
 
@@ -45,10 +49,22 @@ class TxtReaderActivity final : public ReaderActivity {
   uint8_t cachedExtraParagraphSpacing = 0;
   uint8_t cachedParagraphIndentSpaces = 0;
   uint8_t cachedParagraphAlignment = CrossPointSettings::LEFT_ALIGN;
+  bool cachedHyphenationEnabled = false;
   int cachedOrientedMarginTop = 0;
   int cachedOrientedMarginRight = 0;
   int cachedOrientedMarginBottom = 0;
   int cachedOrientedMarginLeft = 0;
+
+  struct LayoutSettingsSnapshot {
+    int fontId = 0;
+    uint8_t fontPointSize = 0;
+    uint8_t lineSpacing = 0;
+    uint8_t screenMargin = 0;
+    uint8_t extraParagraphSpacing = 0;
+    uint8_t paragraphIndentSpaces = 0;
+    uint8_t paragraphAlignment = 0;
+    bool hyphenationEnabled = false;
+  };
 
   bool renderPage(GfxRenderer& renderer);
   bool initializeReader(GfxRenderer& renderer);
@@ -66,6 +82,17 @@ class TxtReaderActivity final : public ReaderActivity {
   bool loadBook() override;
   std::string getBookTitle() const override { return txt ? txt->getTitle() : ""; }
   void renderBook() override;
+#ifndef CROSSPOINT_TXT_READER_TEST
+  bool handleFormatInput() override;
+  void openTextSettings();
+#endif
+  LayoutSettingsSnapshot captureLayoutSettings() const;
+  bool layoutSettingsChanged(const LayoutSettingsSnapshot& previous) const;
+  bool refreshTxtMetricSession();
+  static txt::PageLayout::HyphenationStatus findTxtHyphenationBreaks(void* context, const char* word,
+                                                                     size_t wordLength, uint8_t* output,
+                                                                     size_t outputCapacity, size_t& outputCount);
+  void handleTextSettingsReturn(const LayoutSettingsSnapshot& previous, size_t sourceAnchor, bool hasAnchor);
 
  public:
 #ifdef CROSSPOINT_TXT_READER_TEST

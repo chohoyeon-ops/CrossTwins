@@ -5,13 +5,23 @@
 #include <vector>
 
 // Genuine .cpfont v4 bytes read by production SdCardFont through the host HAL.
-inline void makeTypographyFont(bool replacement = true, size_t extraHangul = 0, bool specialSpaces = true, uint16_t bitmapBytes = 1, bool kerning = true) {
+inline void makeTypographyFont(bool replacement = true, size_t extraHangul = 0, bool specialSpaces = true,
+                               uint16_t bitmapBytes = 1, bool kerning = true, bool asciiLowercase = false,
+                               bool includeHyphen = true, bool includeAsciiSpace = true,
+                               bool zeroAsciiSpace = false) {
   std::vector<uint32_t> cps = {' ', '!', ',', '.', '0', '1', '2', 'A', 'V', 'X', 'Z', 'f', 'i', 0x301, 0x627, 0x644,
                                0xA0, 0x3000, 0x4E00, 0xAC00, 0xFB01, 0xFFFD};
+  if (includeHyphen) cps.push_back('-');
+  if (asciiLowercase) {
+    for (uint32_t cp = 'a'; cp <= 'z'; ++cp) {
+      if (std::find(cps.begin(), cps.end(), cp) == cps.end()) cps.push_back(cp);
+    }
+  }
   if (!specialSpaces) {
     cps.erase(std::find(cps.begin(), cps.end(), 0xA0));
     cps.erase(std::find(cps.begin(), cps.end(), 0x3000));
   }
+  if (!includeAsciiSpace) cps.erase(std::find(cps.begin(), cps.end(), ' '));
   if (!replacement) cps.erase(std::find(cps.begin(), cps.end(), 0xFFFD));
   cps.reserve(cps.size() + 0xFEFC - 0xFE8D + 1 + extraHangul);
   for (size_t i = 1; i <= extraHangul; ++i) cps.push_back(0xAC00 + i);
@@ -41,7 +51,7 @@ inline void makeTypographyFont(bool replacement = true, size_t extraHangul = 0, 
     put32(64 + i*12, cp); put32(68 + i*12, cp); put32(72 + i*12, i);
     EpdGlyph glyph{};
     glyph.width = 1; glyph.height = 1; glyph.top = 1;
-    glyph.advanceX = cp == 'X' ? 137 : cp == 0x301 || cp == 'Z' ? 0 : cp == 0xFFFD ? 80 :
+    glyph.advanceX = zeroAsciiSpace && cp == ' ' ? 0 : cp == 'X' ? 137 : cp == 0x301 || cp == 'Z' ? 0 : cp == 0xFFFD ? 80 :
                      cp == 'f' || cp == 'i' ? 96 : 128;
     glyph.dataLength = bitmapBytes; glyph.dataOffset = i * bitmapBytes;
     std::memcpy(sdFontTestFile.data() + glyphOffset + i*16, &glyph, sizeof(glyph));

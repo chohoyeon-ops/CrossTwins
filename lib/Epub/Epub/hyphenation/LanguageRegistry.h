@@ -22,5 +22,8 @@ struct LanguageEntryView {
 // Returns the Liang-backed hyphenator for a given primary language tag (e.g., "en", "fr").
 const LanguageHyphenator* getLanguageHyphenatorForPrimaryTag(const std::string& primaryTag);
 
+// Fixed English rules for TXT's bounded ASCII candidate path; independent of EPUB metadata selection.
+const LanguageHyphenator* getEnglishLanguageHyphenator();
+
 // Exposes the list of supported languages primarily for tooling/tests.
 LanguageEntryView getLanguageEntries();

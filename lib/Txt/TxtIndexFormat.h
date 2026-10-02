@@ -13,13 +13,15 @@ constexpr uint8_t INDEX_VERSION_V5 = 5;
 constexpr uint8_t INDEX_VERSION_V6 = 6;
 constexpr uint8_t INDEX_VERSION_V7 = 7;
 constexpr uint8_t INDEX_VERSION_V8 = 8;
+constexpr uint8_t INDEX_VERSION_V9 = 9;
 constexpr size_t INDEX_HEADER_V3_SIZE = 30;
 constexpr size_t INDEX_HEADER_V4_SIZE = 30;
 constexpr size_t INDEX_HEADER_V5_SIZE = 35;
 constexpr size_t INDEX_HEADER_V6_SIZE = 49;
 constexpr size_t INDEX_HEADER_V7_SIZE = 49;
 constexpr size_t INDEX_HEADER_V8_SIZE = 49;
-constexpr size_t INDEX_HEADER_CURRENT_SIZE = INDEX_HEADER_V8_SIZE;
+constexpr size_t INDEX_HEADER_V9_SIZE = 50;
+constexpr size_t INDEX_HEADER_CURRENT_SIZE = INDEX_HEADER_V9_SIZE;
 static_assert(INDEX_HEADER_V8_SIZE == INDEX_HEADER_V7_SIZE);
 
 struct IndexHeader {
@@ -37,6 +39,7 @@ struct IndexHeader {
   int32_t paragraphIndentWidth = 0;
   uint8_t extraParagraphSpacing = 0;
   uint8_t paragraphIndentSpaces = 0;
+  uint8_t hyphenationEnabled = 0;
   uint32_t pageCount = 0;
   size_t headerSize = 0;
 };
@@ -54,6 +57,7 @@ struct LayoutKey {
   int32_t paragraphIndentWidth = 0;
   uint8_t extraParagraphSpacing = 0;
   uint8_t paragraphIndentSpaces = 0;
+  uint8_t hyphenationEnabled = 0;
 };
 
 struct ProgressRecord {
@@ -88,6 +92,7 @@ inline size_t headerSizeForVersion(uint8_t version) {
   if (version == INDEX_VERSION_V6) return INDEX_HEADER_V6_SIZE;
   if (version == INDEX_VERSION_V7) return INDEX_HEADER_V7_SIZE;
   if (version == INDEX_VERSION_V8) return INDEX_HEADER_V8_SIZE;
+  if (version == INDEX_VERSION_V9) return INDEX_HEADER_V9_SIZE;
   return 0;
 }
 
@@ -106,10 +111,11 @@ inline bool parseIndexHeader(const uint8_t* data, size_t dataSize, size_t indexF
   parsed.screenMargin = readLeI32(data + 21);
   parsed.alignment = data[25];
   if (version == INDEX_VERSION_V5 || version == INDEX_VERSION_V6 || version == INDEX_VERSION_V7 ||
-      version == INDEX_VERSION_V8) {
+      version == INDEX_VERSION_V8 || version == INDEX_VERSION_V9) {
     parsed.lineAdvance = readLeI32(data + 26);
     parsed.fontPointSize = data[30];
-    if (version == INDEX_VERSION_V6 || version == INDEX_VERSION_V7 || version == INDEX_VERSION_V8) {
+    if (version == INDEX_VERSION_V6 || version == INDEX_VERSION_V7 || version == INDEX_VERSION_V8 ||
+        version == INDEX_VERSION_V9) {
       parsed.viewportHeight = readLeI32(data + 31);
       parsed.paragraphGap = readLeI32(data + 35);
       parsed.paragraphIndentWidth = readLeI32(data + 39);
@@ -119,6 +125,7 @@ inline bool parseIndexHeader(const uint8_t* data, size_t dataSize, size_t indexF
     } else {
       parsed.pageCount = readLe32(data + 31);
     }
+    if (version == INDEX_VERSION_V9) parsed.hyphenationEnabled = data[49];
   } else {
     parsed.pageCount = readLe32(data + 26);
   }
@@ -134,14 +141,15 @@ inline bool parseIndexHeader(const uint8_t* data, size_t dataSize, size_t indexF
 }
 
 inline bool matchesLayout(const IndexHeader& header, const LayoutKey& key) {
-  return header.version == INDEX_VERSION_V8 && header.viewportWidth == key.viewportWidth &&
+  return header.version == INDEX_VERSION_V9 && header.viewportWidth == key.viewportWidth &&
          header.linesPerPage == key.linesPerPage && header.fontId == key.fontId &&
          header.screenMargin == key.screenMargin && header.alignment == key.alignment &&
          header.lineAdvance == key.lineAdvance && header.fontPointSize == key.fontPointSize &&
          header.viewportHeight == key.viewportHeight && header.paragraphGap == key.paragraphGap &&
          header.paragraphIndentWidth == key.paragraphIndentWidth &&
          header.extraParagraphSpacing == key.extraParagraphSpacing &&
-         header.paragraphIndentSpaces == key.paragraphIndentSpaces;
+         header.paragraphIndentSpaces == key.paragraphIndentSpaces &&
+         header.hyphenationEnabled == key.hyphenationEnabled;
 }
 
 inline bool parseProgressRecord(const uint8_t* data, size_t dataSize, uint32_t sourceFileSize,

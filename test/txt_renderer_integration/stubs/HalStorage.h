@@ -7,6 +7,13 @@
 #include <map>
 #include <string>
 #include <memory>
+#include <cstdio>
+#include <cstdlib>
+
+inline size_t halFileTestLiveOwners = 0;
+inline size_t halFileTestOpenHandles = 0;
+inline size_t halFileTestOwnerReleases = 0;
+inline size_t halFileTestBackendCloses = 0;
 
 inline std::vector<uint8_t> sdFontTestFile;
 inline std::map<std::string, std::vector<uint8_t>> readerTestFiles;
@@ -33,14 +40,30 @@ inline SdFontTestEsp ESP;
 inline uint32_t millis() { return 0; }
 
 class HalFile {
-  struct State { size_t position_=0; bool opened_=false; std::vector<uint8_t>* bytes_=nullptr; std::string path_; };
-  std::unique_ptr<State> state = std::make_unique<State>();
+  struct State {
+    size_t position_=0;
+    bool opened_=false;
+    std::vector<uint8_t>* bytes_=nullptr;
+    std::string path_;
+    State() { ++halFileTestLiveOwners; }
+    void close() {
+      if (opened_) { opened_=false; --halFileTestOpenHandles; ++halFileTestBackendCloses; }
+    }
+    ~State() { close(); --halFileTestLiveOwners; ++halFileTestOwnerReleases; }
+  };
+  std::unique_ptr<State> state;
  public:
+  HalFile() = default;
+  HalFile(const HalFile&) = delete;
+  HalFile& operator=(const HalFile&) = delete;
+  HalFile(HalFile&&) = default;
+  HalFile& operator=(HalFile&&) = default;
   bool seekSet(size_t position) { state->position_ = position; return state->opened_ && position <= state->bytes_->size(); }
   bool seek(size_t position) { return seekSet(position); }
   size_t size() const { return state->opened_ ? state->bytes_->size() : 0; }
   bool available() const { return state->opened_ && state->position_ < state->bytes_->size(); }
-  explicit operator bool() const { return state->opened_; }
+  bool isOpen() const { return state && state->opened_; }
+  explicit operator bool() const { return isOpen(); }
   int read(void* output, size_t count) {
     if (sdFontTestReadFailure || !state->opened_ || state->position_ > state->bytes_->size()) return 0;
     count = std::min(count, state->bytes_->size() - state->position_);
@@ -60,12 +83,19 @@ class HalFile {
     return count;
   }
   void flush() {}
-  void close() { state->opened_ = false; }
+  void close() {
+    // Keep the production precondition active in Release host builds too.
+    if (!state) { std::fputs("HalFile::close on empty owner\n", stderr); std::abort(); }
+    state->close();
+  }
+  void allocateOwner() { state = std::make_unique<State>(); }
   void open(const std::string& path = "") {
+    if (!state) allocateOwner();
+    state->close();
     state->path_ = path;
     const auto it = readerTestFiles.find(path);
     state->bytes_ = it == readerTestFiles.end() ? &sdFontTestFile : &it->second;
-    state->opened_ = true; state->position_ = 0;
+    state->opened_ = true; state->position_ = 0; ++halFileTestOpenHandles;
   }
 };
 
@@ -75,14 +105,18 @@ class HalStorage {
   static constexpr size_t READ_HANDLE_ALLOCATION_LIMIT = 256;
   ReadOpenResult openFileForReadChecked(const char*, const char* path, HalFile& file) {
     if (sdFontTestHandleFailure) return ReadOpenResult::ResourceFailure;
+    HalFile candidate;
+    candidate.allocateOwner();
     if (sdFontTestOpenFailure) return ReadOpenResult::IoFailure;
     if (readerTestFiles.count(path) == 0 && std::string(path).find(".cpfont") == std::string::npos) return ReadOpenResult::IoFailure;
-    file.open(path); return ReadOpenResult::Ok;
+    candidate.open(path); file = std::move(candidate); return ReadOpenResult::Ok;
   }
   ReadOpenResult openFileForWriteChecked(const char*, const char* path, HalFile& file) {
     if (sdFontTestHandleFailure) return ReadOpenResult::ResourceFailure;
+    HalFile candidate;
+    candidate.allocateOwner();
     if (sdFontTestOpenFailure) return ReadOpenResult::IoFailure;
-    readerTestFiles[path].clear(); file.open(path); return ReadOpenResult::Ok;
+    readerTestFiles[path].clear(); candidate.open(path); file = std::move(candidate); return ReadOpenResult::Ok;
   }
   bool openFileForRead(const char*, const char* path, HalFile& file) { file.open(path); return true; }
   bool openFileForRead(const char* module, const std::string& path, HalFile& file) {

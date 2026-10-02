@@ -85,6 +85,23 @@ bool hasOnlyCompleteUtf8(const std::string& text) {
   }
   return true;
 }
+
+struct FakeBreaks {
+  std::vector<uint8_t> offsets;
+  size_t calls = 0;
+  txt::PageLayout::HyphenationStatus status = txt::PageLayout::HyphenationStatus::Candidates;
+};
+
+txt::PageLayout::HyphenationStatus findFakeBreaks(void* context, const char*, size_t, uint8_t* output,
+                                                   size_t capacity, size_t& count) {
+  auto& fake = *static_cast<FakeBreaks*>(context);
+  ++fake.calls;
+  count = 0;
+  if (fake.status != txt::PageLayout::HyphenationStatus::Candidates) return fake.status;
+  if (fake.offsets.size() > capacity) return txt::PageLayout::HyphenationStatus::Failure;
+  for (const auto offset : fake.offsets) output[count++] = offset;
+  return count == 0 ? txt::PageLayout::HyphenationStatus::NoCandidates : fake.status;
+}
 }  // namespace
 
 TEST(TxtPageLayout, KeepsMixedUtf8CodepointsTogether) {
@@ -328,6 +345,110 @@ TEST(TxtPageLayout, CorrectsAContextualWidthChangeNearTheBinarySearchBoundary) {
   ASSERT_TRUE(page.loaded);
   EXPECT_EQ(page.lines[0].text, "abc");
   EXPECT_EQ(page.nextOffset, 3u);
+}
+
+TEST(TxtPageLayout, ChoosesWidestFittingHyphenCandidateAndPartitionsSourceBytes) {
+  const std::string source = "abcdefghij";
+  FakeBreaks fake{{3, 5, 7}};
+  PageLayout::Hyphenation hyphenation{&fake, findFakeBreaks};
+  auto width = [](const char* text) { return static_cast<int>(std::char_traits<char>::length(text)); };
+  const auto window = PageLayout::readWindow(0, source.size());
+  std::vector<PageLine> lines;
+  size_t next = 0;
+
+  ASSERT_TRUE(PageLayout::loadPage(reinterpret_cast<const uint8_t*>(source.data()), window.offset, window.length, 0,
+                                   source.size(), 1, 6, true, width, lines, next, PageLayout::Geometry{}, hyphenation));
+  ASSERT_EQ(1u, lines.size());
+  EXPECT_EQ("abcde-", lines[0].text);
+  EXPECT_EQ(0u, lines[0].sourceStart);
+  EXPECT_EQ(5u, lines[0].sourceEnd);
+  EXPECT_FALSE(lines[0].paragraphEnd);
+  EXPECT_EQ(5u, next);
+  EXPECT_EQ(1u, fake.calls);
+
+  std::vector<PageLine> remainder;
+  size_t remainderNext = 0;
+  const auto nextWindow = PageLayout::readWindow(next, source.size());
+  ASSERT_TRUE(PageLayout::loadPage(reinterpret_cast<const uint8_t*>(source.data() + nextWindow.offset),
+                                   nextWindow.offset, nextWindow.length, next, source.size(), 1, 10, false, width,
+                                   remainder, remainderNext, PageLayout::Geometry{}));
+  ASSERT_EQ(1u, remainder.size());
+  EXPECT_EQ("fghij", remainder[0].text);
+  EXPECT_EQ(5u, remainder[0].sourceStart);
+  EXPECT_EQ(source.size(), remainder[0].sourceEnd);
+  EXPECT_EQ(source.size(), remainderNext);
+}
+
+TEST(TxtPageLayout, DisabledAndNoPatternHyphenationKeepExistingWrapExactly) {
+  const std::string source = "abcdefghij";
+  auto width = [](const char* text) { return static_cast<int>(std::char_traits<char>::length(text)); };
+  const auto baseline = loadPageWithAdvance(source, 0, 1, 6, PageLayout::Geometry{}, width);
+  FakeBreaks noPatterns{{}, 0, PageLayout::HyphenationStatus::NoCandidates};
+  const auto window = PageLayout::readWindow(0, source.size());
+  std::vector<PageLine> lines;
+  size_t next = 0;
+  ASSERT_TRUE(PageLayout::loadPage(reinterpret_cast<const uint8_t*>(source.data()), window.offset, window.length, 0,
+                                   source.size(), 1, 6, true, width, lines, next, PageLayout::Geometry{},
+                                   PageLayout::Hyphenation{&noPatterns, findFakeBreaks}));
+  ASSERT_EQ(1u, lines.size());
+  ASSERT_EQ(1u, baseline.lines.size());
+  EXPECT_EQ(baseline.lines[0].text, lines[0].text);
+  EXPECT_EQ(baseline.lines[0].sourceStart, lines[0].sourceStart);
+  EXPECT_EQ(baseline.lines[0].sourceEnd, lines[0].sourceEnd);
+  EXPECT_EQ(baseline.nextOffset, next);
+  EXPECT_EQ(1u, noPatterns.calls);
+}
+
+TEST(TxtPageLayout, NonFittingPatternCandidatesFallBackToTheOriginalUnhyphenatedLine) {
+  const std::string source = "abcdefghij";
+  FakeBreaks fake{{3, 5, 7}};
+  const auto window = PageLayout::readWindow(0, source.size());
+  std::vector<PageLine> lines;
+  size_t next = 0;
+  auto width = [](const char* text) { return static_cast<int>(std::char_traits<char>::length(text)); };
+
+  ASSERT_TRUE(PageLayout::loadPage(reinterpret_cast<const uint8_t*>(source.data()), window.offset, window.length, 0,
+                                   source.size(), 1, 3, true, width, lines, next, PageLayout::Geometry{},
+                                   PageLayout::Hyphenation{&fake, findFakeBreaks}));
+  ASSERT_EQ(1u, lines.size());
+  EXPECT_EQ("abc", lines[0].text);
+  EXPECT_EQ(3u, lines[0].sourceEnd);
+  EXPECT_EQ(3u, next);
+}
+
+TEST(TxtPageLayout, HyphenationFailureLeavesNoPartialPageOrConsumedBytes) {
+  const std::string source = "abcdefghij";
+  FakeBreaks failure{{}, 0, PageLayout::HyphenationStatus::Failure};
+  const auto window = PageLayout::readWindow(0, source.size());
+  std::vector<PageLine> lines;
+  size_t next = 99;
+  auto width = [](const char* text) { return static_cast<int>(std::char_traits<char>::length(text)); };
+
+  EXPECT_FALSE(PageLayout::loadPage(reinterpret_cast<const uint8_t*>(source.data()), window.offset, window.length, 0,
+                                    source.size(), 1, 6, true, width, lines, next, PageLayout::Geometry{},
+                                    PageLayout::Hyphenation{&failure, findFakeBreaks}));
+  EXPECT_TRUE(lines.empty());
+  EXPECT_EQ(0u, next);
+}
+
+TEST(TxtPageLayout, HyphenationIgnoresOverlongAndMixedOrCompoundAsciiRuns) {
+  const std::vector<std::string> sources{std::string(65, 'a'), "co-opportunity", "word'suffix"};
+  for (const std::string& source : sources) {
+    FakeBreaks fake{{3, 5}};
+    const auto page = loadPageWithAdvance(source, 0, 1, 4, PageLayout::Geometry{},
+                                          [](const char* text) { return static_cast<int>(std::char_traits<char>::length(text)); });
+    const auto window = PageLayout::readWindow(0, source.size());
+    std::vector<PageLine> lines;
+    size_t next = 0;
+    auto width = [](const char* text) { return static_cast<int>(std::char_traits<char>::length(text)); };
+    ASSERT_TRUE(PageLayout::loadPage(reinterpret_cast<const uint8_t*>(source.data()), window.offset, window.length, 0,
+                                     source.size(), 1, 4, true, width, lines, next, PageLayout::Geometry{},
+                                     PageLayout::Hyphenation{&fake, findFakeBreaks}));
+    ASSERT_EQ(1u, page.lines.size());
+    EXPECT_EQ(page.lines[0].text, lines[0].text);
+    EXPECT_EQ(page.nextOffset, next);
+    EXPECT_EQ(0u, fake.calls);
+  }
 }
 
 TEST(TxtPageLayout, MeasuresTheAvailableTailWhenAnExponentialProbeReachesEof) {
