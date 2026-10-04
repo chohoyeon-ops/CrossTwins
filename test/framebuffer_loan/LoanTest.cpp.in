@@ -1,0 +1,80 @@
+#include <BuildScratch.h>
+#include <gtest/gtest.h>
+#include <array>
+#include <cstring>
+#include <cstdint>
+#include <cstdlib>
+#include <Logging.h>
+class FreeInkDisplay {
+ public:
+  alignas(8) std::array<uint8_t, 48000> bytes{};
+  uint8_t* frameBuffer0 = bytes.data();
+  uint8_t* frameBuffer = bytes.data();
+  uint32_t bufferSize = bytes.size();
+  bool _buildLent = false, _shadowValid = true;
+  int syncs = 0;
+  void syncPendingAsync() { ++syncs; }
+  uint8_t* lendBuildStorage(uint32_t*);
+  void returnBuildStorage();
+  uint8_t* lendFrameBufferStorage(uint32_t* n) { return lendBuildStorage(n); }
+  void returnFrameBufferStorage() { returnBuildStorage(); }
+  uint8_t* getFrameBuffer() { return frameBuffer; }
+};
+@DISPLAY_SOURCE@
+struct Esp { void restart() { std::abort(); } } ESP;
+class GfxRenderer {
+ public:
+  FreeInkDisplay display;
+  uint8_t* frameBuffer = display.getFrameBuffer();
+  uint32_t frameBufferLoans = 0;
+  bool hasFrameBuffer() const { return frameBuffer != nullptr; }
+  uint32_t frameBufferLoanCount() const { return frameBufferLoans; }
+  void releaseFrameBufferForBuild();
+  bool restoreFrameBufferAfterBuild();
+@LOAN_DECL@
+};
+@LOAN_SOURCE@
+TEST(FrameBufferLoan, NestedAndExplicitEndReturnExactlyOnce) {
+  GfxRenderer r;
+  auto* original = r.frameBuffer;
+  {
+    GfxRenderer::FrameBufferLoan outer(r);
+    EXPECT_FALSE(r.hasFrameBuffer());
+    EXPECT_EQ(r.display.syncs, 1);
+    EXPECT_FALSE(r.display._shadowValid);
+    {
+      GfxRenderer::FrameBufferLoan inner(r);
+      inner.end();
+      EXPECT_FALSE(r.hasFrameBuffer());
+      EXPECT_EQ(r.frameBufferLoanCount(), 1U);
+    }
+    auto* scratch = buildscratch::claim(48000);
+    ASSERT_EQ(scratch, original);
+    std::memset(scratch, 0, 48000);
+    EXPECT_EQ(buildscratch::claim(1), nullptr);
+    buildscratch::release(scratch);
+    outer.end();
+    outer.end();
+    EXPECT_EQ(r.frameBuffer, original);
+  }
+  for (auto b : r.display.bytes) ASSERT_EQ(b, 0xFF);
+  EXPECT_EQ(buildscratch::claim(1), nullptr);
+  EXPECT_FALSE(r.display._buildLent);
+}
+TEST(FrameBufferLoan, EarlyFailureAndRepeatedActivityScopesLeaveNoOwnershipBehind) {
+  GfxRenderer r;
+  auto operation = [&]() {
+    GfxRenderer::FrameBufferLoan loan(r);
+    auto* p = buildscratch::claim(40000);
+    EXPECT_NE(p, nullptr);
+    buildscratch::release(p); // synchronous stream destruction precedes the loan's destructor
+    return false;
+  };
+  for (int i = 0; i < 100; ++i) {
+    EXPECT_FALSE(operation());
+    EXPECT_TRUE(r.hasFrameBuffer());
+    EXPECT_FALSE(r.display._buildLent);
+    EXPECT_EQ(buildscratch::claim(1), nullptr);
+  }
+  EXPECT_EQ(r.frameBufferLoanCount(), 100U);
+}

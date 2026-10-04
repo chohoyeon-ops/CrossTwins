@@ -79,3 +79,5 @@ add_subdirectory(phase2b)
 add_subdirectory(reader_contention)
 add_subdirectory(reader_remember)
 add_subdirectory(epub_spine_chunks)
+
+add_subdirectory(framebuffer_loan)

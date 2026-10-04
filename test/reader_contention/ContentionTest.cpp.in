@@ -24,17 +24,26 @@ struct Manager {
 @LOCK_HEADER@
 @LOCK_SOURCE@
 
+struct Renderer {
+  uint32_t loans = 0;
+  uint32_t frameBufferLoanCount() const { return loans; }
+};
 struct Section {
   bool building = true, partial = false, succeed = true;
+  Renderer* renderer = nullptr;
   int pageCount = 0, currentPage = 0;
   bool isBuilding() const { EXPECT_TRUE(ownsRenderMutex); return building; }
   bool isPartial() const { EXPECT_TRUE(ownsRenderMutex); return partial; }
-  bool buildSomeMore(int) { EXPECT_TRUE(ownsRenderMutex); ++pageCount; return succeed; }
+  bool buildSomeMore(int) { EXPECT_TRUE(ownsRenderMutex); ++pageCount; if (renderer) ++renderer->loans; return succeed; }
   bool isBuildComplete() const { return !building; }
 };
 #define LOG_ERR(...) ((void)0)
 class EpubReaderActivity {
  public:
+  enum class Overlay { None, Toolbar };
+  Overlay overlay = Overlay::None;
+  Renderer renderer;
+  std::atomic<bool> pageBufferStale{false};
   std::unique_ptr<Section> section;
   bool buildHeapPaused = false, heapAllowed = true;
   int updates = 0;
@@ -128,4 +137,29 @@ TEST(ReaderContention, ExplicitUnlockAndCompatibilityConstructorReleaseExactlyOn
   }
   RenderLock next(RenderLock::Mode::Try);
   EXPECT_TRUE(next.ownsLock());
+}
+
+TEST(ReaderContention, LoanDuringSuccessfulOrFailedBuildRequestsRedraw) {
+  for (bool succeed : {false, true}) {
+    EpubReaderActivity reader;
+    reader.section = std::make_unique<Section>();
+    reader.section->renderer = &reader.renderer;
+    reader.section->succeed = succeed;
+    reader.tick();
+    EXPECT_TRUE(reader.pageBufferStale);
+    EXPECT_GE(reader.updates, 1);
+    EXPECT_EQ(reader.renderer.loans, 1U);
+    EXPECT_EQ(bool(reader.section), succeed);
+  }
+}
+TEST(ReaderContention, OpenOverlaySuppressesBackgroundLoanAndBusyHint) {
+  EpubReaderActivity reader;
+  reader.section = std::make_unique<Section>();
+  reader.section->renderer = &reader.renderer;
+  reader.overlay = EpubReaderActivity::Overlay::Toolbar;
+  reader.tick();
+  EXPECT_EQ(reader.renderer.loans, 0U);
+  EXPECT_FALSE(reader.pageBufferStale);
+  RenderLock lock;
+  EXPECT_FALSE(reader.skipLoopDelay());
 }
