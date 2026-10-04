@@ -273,16 +273,3 @@ std::vector<Hyphenator::BreakInfo> Hyphenator::breakOffsets(const std::string& w
 }
 
 void Hyphenator::setPreferredLanguage(const std::string& lang) { cachedHyphenator_ = hyphenatorForLanguage(lang); }
-
-Hyphenator::AsciiPatternResult Hyphenator::breakEnglishAsciiInto(const char* word, size_t wordLength,
-                                                                  LiangWorkspace& workspace, uint8_t* output,
-                                                                  size_t outputCapacity, size_t& outputCount) {
-  outputCount = 0;
-  if (!word || wordLength == 0 || !output) return AsciiPatternResult::Failure;
-  const auto* english = getEnglishLanguageHyphenator();
-  if (!english) return AsciiPatternResult::Failure;
-  const LiangBreakStatus status =
-      english->breakAsciiIndexesInto(word, wordLength, workspace, output, outputCapacity, outputCount);
-  if (status != LiangBreakStatus::Ok) return AsciiPatternResult::Failure;
-  return outputCount == 0 ? AsciiPatternResult::NoCandidates : AsciiPatternResult::Candidates;
-}

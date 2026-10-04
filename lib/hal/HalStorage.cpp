@@ -196,26 +196,12 @@ bool HalStorage::openFileForRead(const char* moduleName, const char* path, HalFi
 HalStorage::ReadOpenResult HalStorage::openFileForReadChecked(const char* moduleName, const char* path, HalFile& file) {
   static_assert(sizeof(HalFile::Impl) <= READ_HANDLE_ALLOCATION_LIMIT, "Read handle exceeds bounded allocation");
   StorageLock lock;
-  // Allocate before opening so resource failure cannot leave a partially opened handle.
   auto handle = std::unique_ptr<HalFile::Impl>(new (std::nothrow) HalFile::Impl(FsFile{}));
   if (!handle) {
     LOG_ERR(moduleName, "Failed to allocate read handle (%zu bytes)", sizeof(HalFile::Impl));
     return ReadOpenResult::ResourceFailure;
   }
   if (!SDCard.openFileForRead(moduleName, path, handle->file)) return ReadOpenResult::IoFailure;
-  file = HalFile(std::move(handle));
-  return ReadOpenResult::Ok;
-}
-
-HalStorage::ReadOpenResult HalStorage::openFileForWriteChecked(const char* moduleName, const char* path, HalFile& file) {
-  static_assert(sizeof(HalFile::Impl) <= READ_HANDLE_ALLOCATION_LIMIT, "Write handle exceeds bounded allocation");
-  StorageLock lock;
-  auto handle = std::unique_ptr<HalFile::Impl>(new (std::nothrow) HalFile::Impl(FsFile{}));
-  if (!handle) {
-    LOG_ERR(moduleName, "Failed to allocate write handle (%zu bytes)", sizeof(HalFile::Impl));
-    return ReadOpenResult::ResourceFailure;
-  }
-  if (!SDCard.openFileForWrite(moduleName, path, handle->file)) return ReadOpenResult::IoFailure;
   file = HalFile(std::move(handle));
   return ReadOpenResult::Ok;
 }

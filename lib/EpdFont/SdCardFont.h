@@ -1,8 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <array>
-#include <HalStorage.h>
 #include <string>
 #include <vector>
 
@@ -27,49 +25,6 @@ class SdCardFont {
   // Distinct from a missed-glyph count so the caller can retry smaller.
   static constexpr int PREWARM_ARENA_TOO_LARGE = -2;
   static constexpr uint8_t MAX_STYLES = 4;
-
-  enum class TxtMetricStatus : uint8_t { Ok, Replacement, Missing, IoFailure, ResourceFailure, Unavailable };
-  struct TxtGlyphMetric {
-    TxtMetricStatus status = TxtMetricStatus::Unavailable;
-    uint32_t resolvedCodepoint = 0;
-    EpdGlyph glyph{};
-    bool hasGlyph() const { return status == TxtMetricStatus::Ok || status == TxtMetricStatus::Replacement; }
-  };
-
-  // Caller-owned session: allocate once outside hot loops, never on a small task stack.
-  // Metrics and the retained read handle are independent of bitmap/prewarm caches.
-  class TxtMetricContext {
-   public:
-    static constexpr size_t CACHE_CAPACITY = 64;
-    static constexpr size_t MAX_CONTEXT_BYTES = 2112;
-    static constexpr size_t MAX_METADATA_READ_BYTES = sizeof(EpdGlyph);
-    static constexpr size_t CACHE_ALLOCATION_BYTES = 0;
-    TxtMetricContext() = default;
-    TxtMetricContext(const TxtMetricContext&) = delete;
-    TxtMetricContext& operator=(const TxtMetricContext&) = delete;
-    void clearCache() { count = 0; next = 0; }
-
-   private:
-    friend class SdCardFont;
-    struct Entry {
-      TxtGlyphMetric metric;
-      uint32_t codepoint = 0;
-      uint8_t style = 0;
-    };
-    static_assert(sizeof(Entry) <= 32, "TXT metric cache entry exceeds bound");
-    std::array<Entry, CACHE_CAPACITY> entries{};
-    HalFile file;
-    const SdCardFont* owner = nullptr;
-    uint32_t generation = 0;
-    size_t count = 0;
-    size_t next = 0;
-    TxtMetricStatus status = TxtMetricStatus::Unavailable;
-  };
-
-  // Reopen/reset the session after font load/unload; failure never yields usable metrics.
-  TxtMetricStatus openTxtMetrics(TxtMetricContext& context) const;
-  // Metadata-only exact lookup. Zero advance is a valid glyph; failed reads are not cached.
-  TxtGlyphMetric getTxtGlyphMetric(TxtMetricContext& context, uint32_t codepoint, uint8_t style = 0) const;
 
   SdCardFont() = default;
   ~SdCardFont();
@@ -317,7 +272,6 @@ class SdCardFont {
 
   PerStyle styles_[MAX_STYLES] = {};
   uint8_t styleCount_ = 0;
-  uint32_t metricGeneration_ = 0;
 
   char filePath_[128] = {};
 
@@ -392,5 +346,3 @@ class SdCardFont {
   // from the RAM-resident full interval table, without SD I/O.
   static bool onCoverageQuery(void* ctx, uint32_t codepoint);
 };
-static_assert(sizeof(SdCardFont::TxtMetricContext) <= SdCardFont::TxtMetricContext::MAX_CONTEXT_BYTES,
-              "TXT metric context exceeds bound");

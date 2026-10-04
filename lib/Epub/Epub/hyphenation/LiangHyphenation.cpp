@@ -73,9 +73,19 @@ using EmbeddedAutomaton = SerializedHyphenationPatterns;
 // Upper bounds for the fixed word buffers. Sized for German (longest known word
 // ≈63 codepoints × 2 UTF-8 bytes + 2 sentinel dots = 128 bytes). Words that
 // exceed these limits are skipped rather than heap-allocated.
-static constexpr size_t MAX_WORD_BYTES = LiangWorkspace::MAX_WORD_BYTES;
-static constexpr size_t MAX_WORD_CHARS = LiangWorkspace::MAX_WORD_CHARS;
-using AugmentedWord = LiangWorkspace;
+static constexpr size_t MAX_WORD_BYTES = 160;  // max UTF-8 bytes in augmented word
+static constexpr size_t MAX_WORD_CHARS = 70;   // max codepoints + 2 sentinel dots
+
+struct AugmentedWord {
+  uint8_t bytes[MAX_WORD_BYTES];
+  size_t charByteOffsets[MAX_WORD_CHARS];
+  int32_t byteToCharIndex[MAX_WORD_BYTES];
+  size_t byteLen = 0;
+  size_t charCount_ = 0;
+
+  bool empty() const { return byteLen == 0; }
+  size_t charCount() const { return charCount_; }
+};
 
 // Encode a single Unicode codepoint into UTF-8 and append to word.bytes[].
 // Returns the number of bytes written, or 0 if the codepoint is invalid or the
@@ -116,11 +126,11 @@ size_t encodeUtf8(uint32_t cp, AugmentedWord& word) {
 
 // Build the dotted, lowercase UTF-8 representation plus lookup tables into `word`.
 // Returns false if the word should be skipped (empty, non-letter, or too long).
-bool buildAugmentedWord(AugmentedWord& word, const CodepointInfo* cps, size_t cpCount, const LiangWordConfig& config) {
+bool buildAugmentedWord(AugmentedWord& word, const std::vector<CodepointInfo>& cps, const LiangWordConfig& config) {
   word.byteLen = 0;
   word.charCount_ = 0;
 
-  if (!cps || cpCount == 0) {
+  if (cps.empty()) {
     return false;
   }
 
@@ -128,8 +138,7 @@ bool buildAugmentedWord(AugmentedWord& word, const CodepointInfo* cps, size_t cp
   word.charByteOffsets[word.charCount_++] = 0;
   word.bytes[word.byteLen++] = '.';
 
-  for (size_t i = 0; i < cpCount; ++i) {
-    const auto& info = cps[i];
+  for (const auto& info : cps) {
     if (!config.isLetter(info.value)) {
       word.byteLen = 0;
       word.charCount_ = 0;
@@ -169,31 +178,6 @@ bool buildAugmentedWord(AugmentedWord& word, const CodepointInfo* cps, size_t cp
     }
   }
 
-  return true;
-}
-
-bool buildAugmentedAscii(AugmentedWord& word, const char* input, size_t inputLength, const LiangWordConfig& config) {
-  word.byteLen = 0;
-  word.charCount_ = 0;
-  if (!input || inputLength == 0 || inputLength + 2 > MAX_WORD_CHARS || inputLength + 2 > MAX_WORD_BYTES) return false;
-
-  word.charByteOffsets[word.charCount_++] = 0;
-  word.bytes[word.byteLen++] = '.';
-  for (size_t i = 0; i < inputLength; ++i) {
-    const uint8_t value = static_cast<uint8_t>(input[i]);
-    if (!((value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z')) || !config.isLetter(value)) {
-      word.byteLen = 0;
-      word.charCount_ = 0;
-      return false;
-    }
-    word.charByteOffsets[word.charCount_++] = word.byteLen;
-    word.bytes[word.byteLen++] = static_cast<uint8_t>(config.toLower(value));
-  }
-
-  word.charByteOffsets[word.charCount_++] = word.byteLen;
-  word.bytes[word.byteLen++] = '.';
-  for (size_t i = 0; i < word.byteLen; ++i) word.byteToCharIndex[i] = -1;
-  for (size_t i = 0; i < word.charCount_; ++i) word.byteToCharIndex[word.charByteOffsets[i]] = static_cast<int32_t>(i);
   return true;
 }
 
@@ -328,13 +312,14 @@ bool transition(const EmbeddedAutomaton& automaton, const AutomatonState& state,
 // Converts odd score positions back into codepoint indexes, honoring min prefix/suffix constraints.
 // Each break corresponds to scores[breakIndex + 1] because of the leading '.' sentinel.
 // Convert odd score entries into hyphen positions while honoring prefix/suffix limits.
-LiangBreakStatus collectBreakIndexesInto(size_t cpCount, const uint8_t* scores, size_t scoresSize, size_t minPrefix,
-                                         size_t minSuffix, uint8_t* output, size_t outputCapacity,
-                                         size_t& outputCount) {
-  outputCount = 0;
-  if (cpCount < 2) return LiangBreakStatus::Ok;
+std::vector<size_t> collectBreakIndexes(const std::vector<CodepointInfo>& cps, const uint8_t* scores,
+                                        const size_t scoresSize, const size_t minPrefix, const size_t minSuffix) {
+  std::vector<size_t> indexes;
+  const size_t cpCount = cps.size();
+  if (cpCount < 2) {
+    return indexes;
+  }
 
-  size_t required = 0;
   for (size_t breakIndex = 1; breakIndex < cpCount; ++breakIndex) {
     if (breakIndex < minPrefix) {
       continue;
@@ -352,56 +337,10 @@ LiangBreakStatus collectBreakIndexesInto(size_t cpCount, const uint8_t* scores, 
     if ((scores[scoreIdx] & 1u) == 0) {
       continue;
     }
-    ++required;
-  }
-  if (required > outputCapacity || (required != 0 && !output)) return LiangBreakStatus::OutputTooSmall;
-
-  for (size_t breakIndex = 1; breakIndex < cpCount; ++breakIndex) {
-    if (breakIndex < minPrefix || cpCount - breakIndex < minSuffix) continue;
-    const size_t scoreIdx = breakIndex + 1;
-    if (scoreIdx >= scoresSize) break;
-    if ((scores[scoreIdx] & 1u) == 0) continue;
-    output[outputCount++] = static_cast<uint8_t>(breakIndex);
+    indexes.push_back(breakIndex);
   }
 
-  return LiangBreakStatus::Ok;
-}
-
-LiangBreakStatus scoreLiang(AugmentedWord& augmented, const SerializedHyphenationPatterns& patterns,
-                            const LiangWordConfig& config, uint8_t* output, size_t outputCapacity,
-                            size_t& outputCount) {
-  outputCount = 0;
-  if (!patterns.data || patterns.size == 0) return LiangBreakStatus::InvalidPatterns;
-  const AutomatonState root = decodeState(patterns, patterns.rootOffset);
-  if (!root.valid()) return LiangBreakStatus::InvalidPatterns;
-
-  std::fill(augmented.scores, augmented.scores + augmented.charCount_, 0);
-  for (size_t charStart = 0; charStart < augmented.charCount_; ++charStart) {
-    const size_t byteStart = augmented.charByteOffsets[charStart];
-    AutomatonState state = root;
-    for (size_t cursor = byteStart; cursor < augmented.byteLen; ++cursor) {
-      AutomatonState next;
-      if (!transition(patterns, state, augmented.bytes[cursor], next)) break;
-      state = next;
-      if (!state.levels || state.levelsLen == 0) continue;
-      size_t offset = 0;
-      for (size_t i = 0; i < state.levelsLen; ++i) {
-        const uint8_t packed = state.levels[i];
-        offset += static_cast<size_t>(packed / 10);
-        const size_t splitByte = byteStart + offset;
-        if (splitByte >= augmented.byteLen) continue;
-        const int32_t boundary = augmented.byteToCharIndex[splitByte];
-        if (boundary < 0 || boundary < 2 || boundary + 2 > static_cast<int32_t>(augmented.charCount_)) continue;
-        const size_t idx = static_cast<size_t>(boundary);
-        if (idx < augmented.charCount_) {
-          const uint8_t level = static_cast<uint8_t>(packed % 10);
-          augmented.scores[idx] = std::max(augmented.scores[idx], level);
-        }
-      }
-    }
-  }
-  return collectBreakIndexesInto(augmented.charCount_ - 2, augmented.scores, augmented.charCount_, config.minPrefix,
-                                 config.minSuffix, output, outputCapacity, outputCount);
+  return indexes;
 }
 
 }  // namespace
@@ -412,38 +351,67 @@ std::vector<size_t> liangBreakIndexes(const std::vector<CodepointInfo>& cps,
   // AugmentedWord uses fixed-size C arrays (no heap allocation) to avoid
   // fragmenting the heap across hundreds of words during page layout.
   AugmentedWord augmented;
-  if (!buildAugmentedWord(augmented, cps.data(), cps.size(), config)) {
+  if (!buildAugmentedWord(augmented, cps, config)) {
     return {};
   }
 
-  uint8_t output[MAX_WORD_CHARS]{};
-  size_t outputCount = 0;
-  if (scoreLiang(augmented, patterns, config, output, MAX_WORD_CHARS, outputCount) != LiangBreakStatus::Ok) return {};
-  std::vector<size_t> indexes;
-  indexes.reserve(outputCount);
-  for (size_t i = 0; i < outputCount; ++i) indexes.push_back(output[i]);
-  return indexes;
-}
+  const EmbeddedAutomaton& automaton = patterns;
 
-LiangBreakStatus liangBreakIndexesInto(const CodepointInfo* cps, size_t cpCount,
-                                       const SerializedHyphenationPatterns& patterns, const LiangWordConfig& config,
-                                       LiangWorkspace& workspace, uint8_t* output, size_t outputCapacity,
-                                       size_t& outputCount) {
-  outputCount = 0;
-  if (!config.isLetter || !config.toLower || (!cps && cpCount != 0) || !output ||
-      !buildAugmentedWord(workspace, cps, cpCount, config)) {
-    return LiangBreakStatus::InvalidInput;
+  const AutomatonState root = decodeState(automaton, automaton.rootOffset);
+  if (!root.valid()) {
+    return {};
   }
-  return scoreLiang(workspace, patterns, config, output, outputCapacity, outputCount);
-}
 
-LiangBreakStatus liangBreakIndexesAsciiInto(const char* word, size_t wordLength,
-                                            const SerializedHyphenationPatterns& patterns,
-                                            const LiangWordConfig& config, LiangWorkspace& workspace,
-                                            uint8_t* output, size_t outputCapacity, size_t& outputCount) {
-  outputCount = 0;
-  if (!config.isLetter || !config.toLower || !output || !buildAugmentedAscii(workspace, word, wordLength, config)) {
-    return LiangBreakStatus::InvalidInput;
+  // Liang scores: one entry per augmented char (leading/trailing dots included).
+  // Stack-allocated to avoid heap fragmentation (see memory design note above).
+  uint8_t scores[MAX_WORD_CHARS];
+  for (size_t i = 0; i < augmented.charCount_; ++i) {
+    scores[i] = 0;
   }
-  return scoreLiang(workspace, patterns, config, output, outputCapacity, outputCount);
+
+  // Walk every starting character position and stream bytes through the trie.
+  for (size_t charStart = 0; charStart < augmented.charCount_; ++charStart) {
+    const size_t byteStart = augmented.charByteOffsets[charStart];
+    AutomatonState state = root;
+
+    for (size_t cursor = byteStart; cursor < augmented.byteLen; ++cursor) {
+      AutomatonState next;
+      if (!transition(automaton, state, augmented.bytes[cursor], next)) {
+        break;  // No more matches for this prefix.
+      }
+      state = next;
+
+      if (state.levels && state.levelsLen > 0) {
+        size_t offset = 0;
+        // Each packed byte stores the byte-distance delta and the Liang level digit.
+        for (size_t i = 0; i < state.levelsLen; ++i) {
+          const uint8_t packed = state.levels[i];
+          const size_t dist = static_cast<size_t>(packed / 10);
+          const uint8_t level = static_cast<uint8_t>(packed % 10);
+
+          offset += dist;
+          const size_t splitByte = byteStart + offset;
+          if (splitByte >= augmented.byteLen) {
+            continue;
+          }
+
+          const int32_t boundary = augmented.byteToCharIndex[splitByte];
+          if (boundary < 0) {
+            continue;  // Mid-codepoint byte, wait for the next one.
+          }
+          if (boundary < 2 || boundary + 2 > static_cast<int32_t>(augmented.charCount_)) {
+            continue;  // Skip splits that land in the leading/trailing sentinels.
+          }
+
+          const size_t idx = static_cast<size_t>(boundary);
+          if (idx >= augmented.charCount_) {
+            continue;
+          }
+          scores[idx] = std::max(scores[idx], level);
+        }
+      }
+    }
+  }
+
+  return collectBreakIndexes(cps, scores, augmented.charCount_, config.minPrefix, config.minSuffix);
 }
