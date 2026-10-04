@@ -4,6 +4,7 @@ _order: "36"
 _bcp47: "ko"
 
 STR_CROSSPOINT: "CrossPoint"
+STR_CROSSTWINS: "CrossTwins"
 STR_BOOTING: "시작 중"
 STR_SLEEPING: "절전 모드"
 STR_ENTERING_SLEEP: "절전 모드로 전환 중"
