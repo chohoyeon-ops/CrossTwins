@@ -5,15 +5,11 @@
 #include <HalStorage.h>
 #include <Logging.h>
 #include <Memory.h>
-#include <Txt.h>
-#include <TxtIndexFormat.h>
 #include <Xtc.h>
 
 #include <algorithm>
 
 namespace {
-static_assert(txt::INDEX_HEADER_CURRENT_SIZE == txt::INDEX_HEADER_V9_SIZE);
-
 uint32_t readLe32(const uint8_t* p) {
   return uint32_t(p[0]) | (uint32_t(p[1]) << 8) | (uint32_t(p[2]) << 16) | (uint32_t(p[3]) << 24);
 }
@@ -56,24 +52,6 @@ int loadBookProgress(const std::string& path) {
     if (xtc->getPageCount() == 0) return -1;
     if (page >= xtc->getPageCount()) return 100;
     return xtc->calculateProgress(page);
-  }
-  if (FsHelpers::hasTxtExtension(path) || FsHelpers::hasMarkdownExtension(path)) {
-    Txt txt(path, "/.crosspoint");
-    HalFile file;
-    if (!Storage.openFileForRead("HOME", txt.getCachePath() + "/progress.bin", file) || file.read(data, 4) != 4)
-      return -1;
-    const uint32_t page = data[0] | (uint32_t(data[1]) << 8);
-    HalFile index;
-    uint8_t rawHeader[txt::INDEX_HEADER_CURRENT_SIZE]{};
-    if (!Storage.openFileForRead("HOME", txt.getCachePath() + "/index.bin", index)) return -1;
-    const int headerBytes = index.read(rawHeader, sizeof(rawHeader));
-    txt::IndexHeader header;
-    if (headerBytes < 0 ||
-        !txt::parseIndexHeader(rawHeader, static_cast<size_t>(headerBytes), index.size(), header))
-      return -1;
-    HalFile source;
-    if (!Storage.openFileForRead("HOME", path, source) || source.size() != header.sourceFileSize) return -1;
-    return std::min<int>(100, static_cast<int>((page + 1) * 100ULL / header.pageCount));
   }
   return -1;
 }

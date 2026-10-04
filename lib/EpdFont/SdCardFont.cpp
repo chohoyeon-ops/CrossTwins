@@ -197,7 +197,6 @@ void SdCardFont::releaseResidentCaches() {
 }
 
 void SdCardFont::freeAll() {
-  ++metricGeneration_;
   clearOverflow();
   clearPersistentCache();
   for (uint8_t i = 0; i < MAX_STYLES; i++) {
@@ -1682,64 +1681,6 @@ uint8_t SdCardFont::resolveStyleMask(uint8_t styleMask) const {
 }
 
 // --- On-demand glyph loading (overflow buffer) ---
-
-SdCardFont::TxtMetricStatus SdCardFont::openTxtMetrics(TxtMetricContext& context) const {
-  context.file = HalFile{};
-  context.clearCache();
-  context.owner = this;
-  context.generation = metricGeneration_;
-  context.status = TxtMetricStatus::Unavailable;
-  if (!loaded_) return context.status;
-  const auto result = Storage.openFileForReadChecked("SDCF", filePath_, context.file);
-  if (result == HalStorage::ReadOpenResult::ResourceFailure) {
-    context.status = TxtMetricStatus::ResourceFailure;
-  } else if (result == HalStorage::ReadOpenResult::IoFailure) {
-    context.status = TxtMetricStatus::IoFailure;
-  } else {
-    context.status = TxtMetricStatus::Ok;
-  }
-  return context.status;
-}
-
-SdCardFont::TxtGlyphMetric SdCardFont::getTxtGlyphMetric(TxtMetricContext& context, const uint32_t codepoint,
-                                                      const uint8_t style) const {
-  TxtGlyphMetric metric;
-  if (!loaded_ || context.owner != this || context.generation != metricGeneration_) return metric;
-  if (context.status != TxtMetricStatus::Ok) {
-    metric.status = context.status;
-    return metric;
-  }
-  const uint8_t resolvedStyle = resolveStyle(style);
-  for (size_t i = 0; i < context.count; ++i) {
-    const auto& entry = context.entries[i];
-    if (entry.codepoint == codepoint && entry.style == resolvedStyle) return entry.metric;
-  }
-  const auto& fontStyle = styles_[resolvedStyle];
-  int32_t index = findGlobalGlyphIndex(fontStyle, codepoint);
-  metric.resolvedCodepoint = codepoint;
-  metric.status = TxtMetricStatus::Ok;
-  if (index < 0) {
-    index = findGlobalGlyphIndex(fontStyle, REPLACEMENT_GLYPH);
-    metric.resolvedCodepoint = REPLACEMENT_GLYPH;
-    metric.status = index < 0 ? TxtMetricStatus::Missing : TxtMetricStatus::Replacement;
-  }
-  if (index >= 0) {
-    const size_t offset = fontStyle.glyphsFileOffset + static_cast<size_t>(index) * sizeof(EpdGlyph);
-    if (!context.file.seekSet(offset) || context.file.read(&metric.glyph, sizeof(EpdGlyph)) != sizeof(EpdGlyph)) {
-      LOG_ERR("SDCF", "TXT metric read failed for U+%04X style %u", codepoint, resolvedStyle);
-      metric = {};
-      metric.status = TxtMetricStatus::IoFailure;
-      return metric;
-    }
-  }
-  auto& entry = context.entries[context.next];
-  entry.metric = metric;
-  entry.codepoint = codepoint;
-  entry.style = resolvedStyle;
-  context.next = (context.next + 1) % TxtMetricContext::CACHE_CAPACITY;
-  context.count = std::min(context.count + 1, TxtMetricContext::CACHE_CAPACITY);
-  return metric;
-}
 
 const EpdGlyph* SdCardFont::onGlyphMiss(void* ctx, uint32_t codepoint) {
   auto* oc = static_cast<OverflowContext*>(ctx);

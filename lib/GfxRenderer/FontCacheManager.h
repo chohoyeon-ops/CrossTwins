@@ -11,7 +11,6 @@ class TtfEpdFont;
 
 class FontCacheManager {
  public:
-  enum class Preparation : uint8_t { GlyphsOnly, FullTypography };
   FontCacheManager(const std::map<int, EpdFontFamily>& fontMap, const std::map<int, SdCardFont*>& sdCardFonts,
                    const std::map<int, TtfEpdFont*>& ttfFonts);
 
@@ -26,15 +25,13 @@ class FontCacheManager {
   // Everything faults back in on demand. For heap-critical transitions (e.g.
   // web-server + WiFi startup, image decode, dictionary, sleep).
   void releaseSdFontCaches();
-  void prewarmCache(int fontId, const char* utf8Text, uint8_t styleMask = 0x0F, bool accumulate = true,
-                    Preparation preparation = Preparation::FullTypography);
+  void prewarmCache(int fontId, const char* utf8Text, uint8_t styleMask = 0x0F, bool accumulate = true);
   void logStats(const char* label = "render");
   void resetStats();
 
   // Scan-mode API: called by GfxRenderer::drawText() during scan pass
   bool isScanning() const;
-  void recordText(const char* text, int fontId, EpdFontFamily::Style style,
-                   Preparation preparation = Preparation::FullTypography);
+  void recordText(const char* text, int fontId, EpdFontFamily::Style style);
 
   // The FontDecompressor pointer, needed by GfxRenderer::getGlyphBitmap()
   FontDecompressor* getDecompressor() const { return fontDecompressor_; }
@@ -74,13 +71,11 @@ class FontCacheManager {
   static constexpr uint8_t SCAN_FONT_SHIFT = SCAN_STYLE_SHIFT + 2;
   static constexpr uint32_t SCAN_CODEPOINT_MASK = (1U << SCAN_STYLE_SHIFT) - 1;
   static constexpr uint8_t SCAN_GROUP_COUNT = MAX_SCAN_FONTS * 4;
-  static constexpr uint32_t SCAN_FULL_TYPOGRAPHY_FLAG = 1U << 25;
 
   uint8_t resolveScanStyle(int fontId, EpdFontFamily::Style style) const;
   int scanFontIds_[MAX_SCAN_FONTS] = {};
   uint32_t scanCodepoints_[MAX_SCAN_CODEPOINTS + 1] = {};
   uint16_t scanGroupCounts_[SCAN_GROUP_COUNT] = {};
-  uint16_t scanFullTypographyGroups_ = 0;
   uint16_t scanCodepointCount_ = 0;
   uint8_t scanFontCount_ = 0;
   bool scanOverflowWarned_ = false;

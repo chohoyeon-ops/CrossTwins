@@ -9,7 +9,6 @@
 #include <vector>
 
 #include "lib/Epub/Epub/hyphenation/HyphenationCommon.h"
-#include "lib/Epub/Epub/hyphenation/Hyphenator.h"
 #include "lib/Epub/Epub/hyphenation/LanguageHyphenator.h"
 #include "lib/Epub/Epub/hyphenation/LanguageRegistry.h"
 
@@ -226,38 +225,6 @@ void runLanguageEval(const char* langName, const char* primaryTag, const char* r
 }  // namespace
 
 TEST(HyphenationEval, English) { runLanguageEval("english", "en", "english_hyphenation_tests.txt", 98.10); }
-
-TEST(HyphenationBounded, AsciiCallerWorkspaceMatchesTheExistingEnglishVectorPath) {
-  const std::string word = "hyphenation";
-  const auto* english = getEnglishLanguageHyphenator();
-  ASSERT_NE(english, nullptr);
-  const auto expected = english->breakIndexes(collectCodepoints(word));
-
-  LiangWorkspace workspace;
-  uint8_t offsets[LiangWorkspace::MAX_WORD_CHARS]{};
-  size_t count = 0;
-  Hyphenator::setPreferredLanguage("de");
-  ASSERT_EQ(Hyphenator::AsciiPatternResult::Candidates,
-            Hyphenator::breakEnglishAsciiInto(word.data(), word.size(), workspace, offsets, sizeof(offsets), count));
-  ASSERT_EQ(expected.size(), count);
-  for (size_t i = 0; i < count; ++i) EXPECT_EQ(expected[i], offsets[i]);
-
-  count = 99;
-  EXPECT_EQ(LiangBreakStatus::OutputTooSmall,
-            english->breakAsciiIndexesInto(word.data(), word.size(), workspace, offsets, 0, count));
-  EXPECT_EQ(0u, count);
-  Hyphenator::setPreferredLanguage("en");
-}
-
-TEST(HyphenationBounded, ASCIIInputRejectsNonLettersWithoutEmittingPartialOffsets) {
-  LiangWorkspace workspace;
-  uint8_t offsets[LiangWorkspace::MAX_WORD_CHARS]{};
-  size_t count = 99;
-  EXPECT_EQ(Hyphenator::AsciiPatternResult::Failure,
-            Hyphenator::breakEnglishAsciiInto("co-op", 5, workspace, offsets, sizeof(offsets), count));
-  EXPECT_EQ(0u, count);
-}
-
 TEST(HyphenationEval, French) { runLanguageEval("french", "fr", "french_hyphenation_tests.txt", 99.00); }
 TEST(HyphenationEval, German) { runLanguageEval("german", "de", "german_hyphenation_tests.txt", 96.73); }
 TEST(HyphenationEval, Russian) { runLanguageEval("russian", "ru", "russian_hyphenation_tests.txt", 96.22); }

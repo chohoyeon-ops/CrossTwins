@@ -4,6 +4,30 @@ These formats describe the SD-card cache files under `/.crosspoint/epub_<hash>/`
 All POD fields are written in the ESP32 little-endian representation used by
 `Serialization.h`; strings are length-prefixed UTF-8.
 
+## TXT progress checkpoints
+
+TXT readers store two alternating checkpoint files at
+`/.crosspoint/txt_<hash>/progress0.bin` and `progress1.bin`. Version 1 records
+are 44 bytes. Versions 2, 3, and 4 share the same 84-byte layout. Version 4
+stores the exact current source offset, optional display ordinal, up to three
+previous page starts, and a Korean TXT line-splitting mode byte at offset 49.
+The existing metadata checksum covers this byte; the core source offset and
+its checksum are unchanged.
+
+Versions 2 and 3 describe the older TXT wrapping rules. OFF-mode loads retain
+their valid ordinal, and version 3 also retains valid previous-page starts.
+Version 2 discards previous starts. Loading any older version with Korean TXT
+splitting enabled retains only the exact source offset. A version 4 load uses
+the ordinal and previous starts only when the metadata checksum is valid and
+the saved mode is valid and matches the requested mode. A mode mismatch drops
+that optional history while preserving the exact source offset. The next save
+writes version 4, including when the page state itself has not changed.
+
+TXT Hyphenation enables Korean Hangul line-end splitting only. English TXT
+hyphenation and Justify are not implemented. TXT page layout remains on-demand;
+the checkpoint stores only the current boundary and three local previous
+boundaries, not a complete page index.
+
 ## `book.bin`
 
 ### Version 10

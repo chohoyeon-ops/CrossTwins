@@ -9,17 +9,15 @@ class SdCardFont {
     char text[32] = {};
     uint8_t styleMask = 0;
     bool accumulate = true;
-    bool fullTypography = true;
   };
 
   void clearCache() {}
   void releaseResidentCaches() {}
-  int prewarm(const char* text, uint8_t styleMask, bool, bool loadKernLig, bool accumulate) {
+  int prewarm(const char* text, uint8_t styleMask, bool, bool, bool accumulate) {
     auto& call = prewarmCalls[prewarmCallCount++];
     std::snprintf(call.text, sizeof(call.text), "%s", text);
     call.styleMask = styleMask;
     call.accumulate = accumulate;
-    call.fullTypography = loadKernLig;
     return 0;
   }
   uint8_t resolveStyle(uint8_t style) const { return resolvedStyles[style & 0x03]; }

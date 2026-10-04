@@ -29,8 +29,6 @@ constexpr StrId LAYOUT_ROW_NAME_IDS[] = {
     StrId::STR_PARAGRAPH_INDENTATION, StrId::STR_ALIGNMENT,    StrId::STR_SCREEN_MARGIN};
 constexpr StrId STYLE_ROW_NAME_IDS[] = {StrId::STR_FOCUS_READING, StrId::STR_HYPHENATION, StrId::STR_EMBEDDED_STYLE,
                                         StrId::STR_TEXT_AA};
-constexpr uint8_t TXT_LAYOUT_ROW_IDS[] = {0, 3, 4, 5, 6};
-constexpr uint8_t TXT_STYLE_ROW_IDS[] = {1, 3};
 
 int findCurrentFontIndex(const SdCardFontRegistry* registry, const char* sdFontFamilyName) {
   if (sdFontFamilyName[0] != '\0' && registry) {
@@ -56,6 +54,9 @@ constexpr StrId CHARACTER_SPACING_IDS[] = {StrId::STR_SPACING_MINUS_2, StrId::ST
                                            StrId::STR_SPACING_PLUS_2};
 constexpr StrId ALIGNMENT_IDS[] = {StrId::STR_JUSTIFY, StrId::STR_ALIGN_LEFT, StrId::STR_CENTER, StrId::STR_ALIGN_RIGHT,
                                    StrId::STR_BOOK_S_STYLE};
+constexpr uint8_t ALIGNMENT_VALUES[] = {CrossPointSettings::JUSTIFIED, CrossPointSettings::LEFT_ALIGN,
+                                        CrossPointSettings::CENTER_ALIGN, CrossPointSettings::RIGHT_ALIGN,
+                                        CrossPointSettings::BOOK_STYLE};
 constexpr int MARGIN_MIN = CrossPointSettings::SCREEN_MARGIN_MIN;
 constexpr int MARGIN_MAX = CrossPointSettings::SCREEN_MARGIN_MAX;
 constexpr int MARGIN_STEP = CrossPointSettings::SCREEN_MARGIN_STEP;
@@ -66,10 +67,16 @@ static_assert(std::size(WORD_SPACING_IDS) == (WORD_SPACING_MAX - WORD_SPACING_MI
 }  // namespace
 
 TextSettingsActivity::TextSettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                           const SdCardFontRegistry* registry, Tab initialTab, Profile profile)
-    : UiTabListActivity("TextSettings", renderer, mappedInput), registry_(registry), tab_(initialTab), profile_(profile) {}
+                                           const SdCardFontRegistry* registry, Tab initialTab,
+                                           const textsettings::Profile profile)
+    : UiTabListActivity("TextSettings", renderer, mappedInput),
+      registry_(registry),
+      tab_(initialTab),
+      profile_(profile) {}
 
-const char* TextSettingsActivity::tabLabel(const int index) const { return I18N.get(TAB_NAME_IDS[index]); }
+const char* TextSettingsActivity::tabLabel(const int index) const {
+  return I18N.get(TAB_NAME_IDS[static_cast<size_t>(textsettings::tabAt(profile_, index))]);
+}
 
 void TextSettingsActivity::onEnter() {
   UiTabListActivity::onEnter();
@@ -83,7 +90,7 @@ void TextSettingsActivity::onEnter() {
   afterHeader = metrics_.topPadding + metrics_.headerHeight + metrics_.verticalSpacing;
   bottomReserved = metrics_.buttonHintsHeight + metrics_.verticalSpacing;
   usableHeight = renderer.getScreenHeight() - afterHeader - bottomReserved;
-  previewHeight = usableHeight * metrics_.previewHeightPercent / 100;
+  previewHeight = textsettings::hasLayoutPreview(profile_) ? usableHeight * metrics_.previewHeightPercent / 100 : 0;
 
   fonts_.clear();
   fonts_.reserve(registry_ ? registry_->getFamilyCount() : 0);
@@ -126,10 +133,10 @@ void TextSettingsActivity::rebuildRowItems() {
         item.label = sizes_[i].name.c_str();
         break;
       case Tab::Layout:
-        item.label = I18N.get(LAYOUT_ROW_NAME_IDS[layoutRowFor(i)]);
+        item.label = I18N.get(LAYOUT_ROW_NAME_IDS[static_cast<size_t>(textsettings::layoutControlAt(profile_, i))]);
         break;
       case Tab::Style:
-        item.label = I18N.get(STYLE_ROW_NAME_IDS[styleRowFor(i)]);
+        item.label = I18N.get(STYLE_ROW_NAME_IDS[static_cast<size_t>(textsettings::styleControlAt(profile_, i))]);
         break;
       default:
         break;
@@ -266,8 +273,9 @@ const char* TextSettingsActivity::confirmLabelText() const {
   }
   switch (tab_) {
     case Tab::Layout:
-      return layoutRowFor(ringPos() - 1) == static_cast<int>(LayoutRow::ParaSpacing) ? tr(STR_TOGGLE)
-                                                                                     : tr(STR_SELECT);
+      return textsettings::layoutControlAt(profile_, static_cast<size_t>(ringPos() - 1)) == LayoutRow::ParagraphSpacing
+                 ? tr(STR_TOGGLE)
+                 : tr(STR_SELECT);
     case Tab::Style:
       return tr(STR_TOGGLE);
     default:
@@ -286,12 +294,14 @@ void TextSettingsActivity::drawChrome() {
   const char* sizeName = (currentSizeIndex_ >= 0 && currentSizeIndex_ < static_cast<int>(sizes_.size()))
                              ? sizes_[currentSizeIndex_].name.c_str()
                              : "";
-  textsettings::renderPreview(renderer, previewLayout_, metrics_.previewPadding, metrics_.verticalSpacing, afterHeader,
-                              previewHeight, familyName, sizeName);
+  if (textsettings::hasLayoutPreview(profile_)) {
+    textsettings::renderPreview(renderer, previewLayout_, metrics_.previewPadding, metrics_.verticalSpacing,
+                                afterHeader, previewHeight, familyName, sizeName);
+  }
 }
 
 void TextSettingsActivity::drawFooter() {
-  if (focusedRowHasNoPreview()) {
+  if (textsettings::hasLayoutPreview(profile_) && focusedRowHasNoPreview()) {
     const int captionHeight = renderer.getTextHeight(UI_10_FONT_ID) + metrics_.verticalSpacing;
     const int capY = afterHeader + usableHeight - captionHeight + metrics_.verticalSpacing;
     renderer.drawText(UI_10_FONT_ID, metrics_.previewPadding, capY, tr(STR_NOT_IN_PREVIEW));
@@ -353,10 +363,10 @@ void TextSettingsActivity::activateRow(int row) {
       }
       break;
     case Tab::Layout:
-      confirmLayoutRow(layoutRowFor(row));
+      confirmLayoutRow(row);
       break;
     case Tab::Style:
-      confirmStyleRow(styleRowFor(row));
+      confirmStyleRow(row);
       break;
     default:
       break;
@@ -374,13 +384,13 @@ void TextSettingsActivity::applySize(int listIndex) {
 }
 
 void TextSettingsActivity::confirmLayoutRow(int row) {
-  switch (static_cast<LayoutRow>(row)) {
-    case LayoutRow::ParaSpacing:
+  switch (textsettings::layoutControlAt(profile_, static_cast<size_t>(row))) {
+    case LayoutRow::ParagraphSpacing:
       SETTINGS.extraParagraphSpacing = !SETTINGS.extraParagraphSpacing;
       SETTINGS.saveToFile();
       requestUpdate();
       break;
-    case LayoutRow::ParaIndentation: {
+    case LayoutRow::ParagraphIndentation: {
       std::vector<std::string> options;
       options.reserve(6);
       options.push_back(tr(STR_STATE_OFF));
@@ -401,11 +411,28 @@ void TextSettingsActivity::confirmLayoutRow(int row) {
       requestUpdate();
       break;
     case LayoutRow::Alignment:
-      optionPopup_.show(StrId::STR_ALIGNMENT, ALIGNMENT_IDS, static_cast<int>(std::size(ALIGNMENT_IDS)),
-                        SETTINGS.paragraphAlignment, [](int idx) {
-                          SETTINGS.paragraphAlignment = static_cast<uint8_t>(idx);
-                          SETTINGS.saveToFile();
-                        });
+      if (profile_ == textsettings::Profile::Txt) {
+        int current = 0;
+        for (size_t i = 0; i < textsettings::alignmentOptionCount(profile_); ++i) {
+          const size_t option = static_cast<size_t>(textsettings::alignmentOptionAt(profile_, i));
+          if (SETTINGS.paragraphAlignment == ALIGNMENT_VALUES[option]) current = static_cast<int>(i);
+        }
+        optionPopup_.show(StrId::STR_ALIGNMENT,
+                          ALIGNMENT_IDS + static_cast<size_t>(textsettings::AlignmentOption::Left),
+                          static_cast<int>(textsettings::alignmentOptionCount(profile_)), current, [this](int idx) {
+                            if (idx < 0 || idx >= static_cast<int>(textsettings::alignmentOptionCount(profile_)))
+                              return;
+                            const size_t option = static_cast<size_t>(textsettings::alignmentOptionAt(profile_, idx));
+                            SETTINGS.paragraphAlignment = ALIGNMENT_VALUES[option];
+                            SETTINGS.saveToFile();
+                          });
+      } else {
+        optionPopup_.show(StrId::STR_ALIGNMENT, ALIGNMENT_IDS, static_cast<int>(std::size(ALIGNMENT_IDS)),
+                          SETTINGS.paragraphAlignment, [](int idx) {
+                            SETTINGS.paragraphAlignment = static_cast<uint8_t>(idx);
+                            SETTINGS.saveToFile();
+                          });
+      }
       requestUpdate();
       break;
     case LayoutRow::WordSpacing: {
@@ -446,20 +473,28 @@ void TextSettingsActivity::confirmLayoutRow(int row) {
 }
 
 std::string TextSettingsActivity::layoutValueText(int row) const {
-  row = layoutRowFor(row);
-  switch (static_cast<LayoutRow>(row)) {
+  switch (textsettings::layoutControlAt(profile_, static_cast<size_t>(row))) {
     case LayoutRow::LineSpacing: {
       const uint8_t v = SETTINGS.lineSpacing;
       return v < std::size(LINE_SPACING_IDS) ? I18N.get(LINE_SPACING_IDS[v]) : I18N.get(StrId::STR_NORMAL);
     }
-    case LayoutRow::ParaSpacing:
+    case LayoutRow::ParagraphSpacing:
       return SETTINGS.extraParagraphSpacing ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
-    case LayoutRow::ParaIndentation: {
+    case LayoutRow::ParagraphIndentation: {
       const int spaces = std::clamp<int>(SETTINGS.paragraphIndentSpaces, 0, 5);
       return spaces == 0 ? tr(STR_STATE_OFF) : std::to_string(spaces);
     }
     case LayoutRow::Alignment: {
       const uint8_t v = SETTINGS.paragraphAlignment;
+      if (profile_ == textsettings::Profile::Txt) {
+        for (size_t i = 0; i < textsettings::alignmentOptionCount(profile_); ++i) {
+          const size_t option = static_cast<size_t>(textsettings::alignmentOptionAt(profile_, i));
+          if (v == ALIGNMENT_VALUES[option]) return I18N.get(ALIGNMENT_IDS[option]);
+        }
+        // TXT treats legacy Justify/Book-style values as left aligned in its
+        // line renderer; report that effective fallback until changed here.
+        return I18N.get(ALIGNMENT_IDS[static_cast<size_t>(textsettings::AlignmentOption::Left)]);
+      }
       return v < std::size(ALIGNMENT_IDS) ? I18N.get(ALIGNMENT_IDS[v]) : I18N.get(StrId::STR_JUSTIFY);
     }
     case LayoutRow::WordSpacing:
@@ -478,7 +513,7 @@ std::string TextSettingsActivity::layoutValueText(int row) const {
 }
 
 void TextSettingsActivity::confirmStyleRow(int row) {
-  switch (static_cast<StyleRow>(row)) {
+  switch (textsettings::styleControlAt(profile_, static_cast<size_t>(row))) {
     case StyleRow::FocusReading:
       SETTINGS.focusReadingEnabled = !SETTINGS.focusReadingEnabled;
       break;
@@ -500,8 +535,7 @@ void TextSettingsActivity::confirmStyleRow(int row) {
 }
 
 std::string TextSettingsActivity::styleValueText(int row) const {
-  row = styleRowFor(row);
-  switch (static_cast<StyleRow>(row)) {
+  switch (textsettings::styleControlAt(profile_, static_cast<size_t>(row))) {
     case StyleRow::FocusReading:
       return SETTINGS.focusReadingEnabled ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
     case StyleRow::Hyphenation:
@@ -520,7 +554,7 @@ std::string TextSettingsActivity::styleValueText(int row) const {
 // have no distinct preview.
 bool TextSettingsActivity::focusedRowHasNoPreview() const {
   if (ringPos() == 0 || tab_ != Tab::Style) return false;
-  const StyleRow row = static_cast<StyleRow>(styleRowFor(ringPos() - 1));
+  const StyleRow row = textsettings::styleControlAt(profile_, static_cast<size_t>(ringPos() - 1));
   return row == StyleRow::Hyphenation || row == StyleRow::EmbeddedStyle || row == StyleRow::AntiAliasing;
 }
 
@@ -542,21 +576,11 @@ int TextSettingsActivity::listCount() const {
     case Tab::Size:
       return static_cast<int>(sizes_.size());
     case Tab::Layout:
-      return profile_ == Profile::Txt ? static_cast<int>(std::size(TXT_LAYOUT_ROW_IDS))
-                                      : static_cast<int>(LayoutRow::Count);
+      return static_cast<int>(textsettings::layoutControlCount(profile_));
     case Tab::Style:
-      return profile_ == Profile::Txt ? static_cast<int>(std::size(TXT_STYLE_ROW_IDS))
-                                      : static_cast<int>(StyleRow::Count);
+      return static_cast<int>(textsettings::styleControlCount(profile_));
 
     default:
       return 0;
   }
-}
-
-int TextSettingsActivity::layoutRowFor(const int visibleRow) const {
-  return profile_ == Profile::Txt ? TXT_LAYOUT_ROW_IDS[visibleRow] : visibleRow;
-}
-
-int TextSettingsActivity::styleRowFor(const int visibleRow) const {
-  return profile_ == Profile::Txt ? TXT_STYLE_ROW_IDS[visibleRow] : visibleRow;
 }
