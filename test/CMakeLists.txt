@@ -84,3 +84,4 @@ add_subdirectory(framebuffer_loan)
 
 add_subdirectory(protected_paths)
 add_subdirectory(settings_password)
+add_subdirectory(section_soft_flush)

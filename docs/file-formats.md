@@ -114,6 +114,14 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
+### Version 51
+
+The serialized layout remains version 50's layout. Cached line positions change:
+soft flushes preserve the logical paragraph's first-line state and apply top
+spacing only at its start. Older finalized and partial section caches are
+invalidated and rebuilt. The partial version sentinel is derived from the
+section version and changes with it. Progress and visible-text anchors are unchanged.
+
 ### Version 50
 
 The header adds `paragraphIndentSpaces` after `extraParagraphSpacing`. The value
