@@ -375,6 +375,8 @@ void EpubReaderActivity::loop() {
     return;
   }
 
+  rememberBookOnceRendered();
+
   // Someone else turned the screen while this reader was stacked (the control
   // center's orientation tile). Reflow before the next render, or the page
   // would be drawn with a layout built for the previous frame size.
@@ -1446,6 +1448,7 @@ void EpubReaderActivity::renderBook() {
     renderContents(std::move(p), orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
     LOG_DBG("ERS", "Rendered page in %dms", millis() - start);
     lastRenderCompleteMs = millis();
+    markPageRendered();
   }
 
   if (currentSpineIndex != lastSavedSpineIndex || section->currentPage != lastSavedPage ||
@@ -1490,6 +1493,8 @@ void EpubReaderActivity::renderBook() {
 }
 
 void EpubReaderActivity::onEndOfBookRendered() {
+  // A valid saved end position is usable; a zero-spine/error book is not.
+  if (epub && epub->getSpineItemsCount() > 0 && endOfBookOptions) markPageRendered();
   automaticPageTurnActive = false;
   if (pendingSyncSaveError) {
     pendingSyncSaveError = false;

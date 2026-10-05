@@ -218,6 +218,7 @@ void TxtReaderActivity::renderBook() {
     renderer.clearScreen();
     renderer.drawCenteredText(UI_12_FONT_ID, 300, tr(STR_EMPTY_FILE), true, EpdFontFamily::BOLD);
     renderer.displayBuffer();
+    markPageRendered();
     persistVisibleCheckpoint();
     if (pendingScreenshot) {
       pendingScreenshot = false;
@@ -246,6 +247,7 @@ void TxtReaderActivity::renderBook() {
 
   renderer.clearScreen();
   renderPage(renderer);
+  markPageRendered();
   persistVisibleCheckpoint();
   if (pendingScreenshot) {
     pendingScreenshot = false;

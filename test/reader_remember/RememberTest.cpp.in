@@ -1,0 +1,330 @@
+#include <gtest/gtest.h>
+#include <algorithm>
+#include <atomic>
+#include <cstdlib>
+#include <cstring>
+#include <memory>
+#include <optional>
+#include <string>
+#include <thread>
+#include <vector>
+
+#define LOG_INF(...) ((void)0)
+#define LOG_DBG(...) ((void)0)
+#define LOG_ERR(...) ((void)0)
+constexpr int UI_12_FONT_ID = 0, STR_EMPTY_FILE = 0, STR_NO_FONTS_AVAILABLE = 0,
+              STR_MEMORY_ERROR = 0, STR_PAGE_LOAD_ERROR = 0, STR_INDEXING = 0, STR_SAVE_PROGRESS_FAILED = 0;
+const char* tr(int) { return "message"; }
+unsigned long millis() { return 1; }
+struct EpdFontFamily { enum { BOLD }; };
+struct HalDisplay { enum GrayscaleBase { Combined, Separate }; enum { HALF_REFRESH, FAST_REFRESH }; };
+struct GfxRenderer {
+  enum class Orientation { Portrait };
+  struct FontCache { void releaseSdFontCaches() {} } fontCache;
+  FontCache* getFontCacheManager() { return &fontCache; }
+  void setOrientation(Orientation) {}
+  int displays = 0;
+  struct Caps { HalDisplay::GrayscaleBase base = HalDisplay::Separate; };
+  Caps grayscaleCapabilities() const { return {}; }
+  void clearScreen(int = 0) {}
+  void drawCenteredText(int, int, const char*, bool, int) {}
+  void drawPixel(int, int, bool) {}
+  void displayBuffer(int = 0) { ++displays; }
+  void displayGrayscaleBase(int) { ++displays; }
+  void preconditionGrayscale() {}
+  void copyGrayscaleLsbBuffers() {}
+  void copyGrayscaleMsbBuffers() {}
+  void displayGrayBuffer() { ++displays; }
+  void cleanupGrayscaleWithFrameBuffer() {}
+};
+namespace ReaderUtils {
+void displayWithRefreshCycle(GfxRenderer& r, int&) { r.displayBuffer(); }
+}
+struct CrossPointSettings {
+  enum XTC_STATUS_BAR_MODE { XTC_STATUS_BAR_TOP, XTC_STATUS_BAR_BOTTOM };
+  int font = 1;
+  int getReaderFontId() const { return font; }
+  int getRefreshFrequency() const { return 4; }
+  struct Status { int xtcMode = XTC_STATUS_BAR_BOTTOM; };
+  Status statusBarSpec() const { return {}; }
+} SETTINGS;
+struct HalFile {
+  std::vector<uint8_t> bytes;
+  int read(void* dst, size_t n) { n = std::min(n, bytes.size()); std::memcpy(dst, bytes.data(), n); return n; }
+};
+struct {
+  bool present = true;
+  std::vector<uint8_t> bytes;
+  bool exists(const char*) { return present; }
+  bool openFileForRead(const char*, const std::string&, HalFile& f) { f.bytes = bytes; return !bytes.empty(); }
+} Storage;
+[[maybe_unused]] struct { size_t getFreeHeap() { return 100000; } size_t getMaxAllocHeap() { return 100000; } } ESP;
+struct { void ensureLoaded(GfxRenderer&) {} } sdFontSystem;
+struct { void goToFullScreenMessage(const char*) {} } activityManager;
+struct { void drawPopup(GfxRenderer&, const char*) {} } GUI;
+struct FsHelpers { static bool hasXtcExtension(const std::string& p) { return p.ends_with(".xtc"); } };
+struct ScreenshotUtil { static void takeScreenshot(GfxRenderer&) {} };
+struct State {
+  int readerActivityLoadCount = 0;
+  std::string openEpubPath;
+  int saves = 0;
+  void saveToFile() { ++saves; }
+} APP_STATE;
+struct Recents {
+  std::vector<std::string> paths;
+  void addBook(const std::string& path, const std::string&, const std::string&, const std::string&) {
+    auto it = std::find(paths.begin(), paths.end(), path);
+    if (it != paths.end()) paths.erase(it);
+    paths.insert(paths.begin(), path);
+  }
+} RECENT_BOOKS;
+struct Activity { void onEnter() {} void onExit() {} };
+class ReaderActivity : public Activity {
+ public:
+  GfxRenderer renderer;
+  std::string bookPath = "book.epub";
+  bool loadSucceeds = true, finished = false;
+  int updates = 0, progressWrites = 0;
+  std::unique_ptr<int> endOfBookOptions;
+  std::atomic<bool> endOfBookOptionsReady{false};
+  @REMEMBER_STATE@
+  virtual bool loadBook() { return loadSucceeds; }
+  std::string getBookTitle() const { return "한글 제목"; }
+  std::string getBookAuthor() const { return "저자"; }
+  std::string getBookThumbBmpPath() const { return "cover.bmp"; }
+  void finish() { finished = true; }
+  void requestUpdate() { ++updates; }
+  void applyInitialOrientation() {}
+  void onEnter();
+  void onExit();
+};
+@ENTER@
+@EXIT@
+
+struct Txt {
+  size_t bytes = 500;
+  size_t getFileSize() const { return bytes; }
+};
+class TxtReaderActivity : public ReaderActivity {
+ public:
+  std::unique_ptr<Txt> txt = std::make_unique<Txt>();
+  bool initialized = true, pendingInitialIndexingPopup = false, currentPageLoaded = false,
+       hasCurrentDisplayOrdinal = false, cachedHyphenationEnabled = false, pendingScreenshot = false;
+  size_t currentPageEndOffset = 0, currentDisplayOrdinal = 0, savedAnchor = 0;
+  int cachedFontId = 1, viewportWidth = 100, linesPerPage = 5;
+  std::vector<std::string> currentPageLines;
+  struct History { size_t offset = 123; size_t currentOffset() { return offset; } } pageHistory;
+  struct Estimate { void observePage(size_t, size_t) {} size_t pageNumberAt(size_t) { return 4; } } pageEstimate;
+  struct PageReader {
+    bool succeeds = true, advances = true;
+    bool loadPage(Txt&, GfxRenderer&, int, int, int, size_t offset, std::vector<std::string>&, size_t& end, bool) {
+      end = offset + (advances ? 20 : 0);
+      return succeeds;
+    }
+  } pageReader;
+  void initializeReader(GfxRenderer&) { initialized = true; }
+  void updateLayoutIfChanged(GfxRenderer&) {}
+  void renderPage(GfxRenderer& r) { r.displayBuffer(); }
+  void persistVisibleCheckpoint() { ++progressWrites; savedAnchor = pageHistory.currentOffset(); }
+  void renderBook();
+};
+@TXT_RENDER@
+
+namespace xtc { const char* errorToString(int) { return "read failure"; } }
+struct Xtc {
+  int depth = 1;
+  bool readSucceeds = true;
+  uint16_t getPageWidth() { return 2; }
+  uint16_t getPageHeight() { return 2; }
+  uint8_t getBitDepth() { return depth; }
+  unsigned getPageCount() { return 3; }
+  std::string getCachePath() { return "cache"; }
+  int getLastError() { return 0; }
+  size_t loadPage(unsigned, uint8_t* p, size_t size) { std::memset(p, 0xff, size); return readSucceeds ? size : 0; }
+};
+bool failAllocation = false;
+void* testMalloc(size_t size) { return failAllocation ? nullptr : std::malloc(size); }
+class XtcReaderActivity : public ReaderActivity {
+ public:
+  std::unique_ptr<Xtc> xtc = std::make_unique<Xtc>();
+  int pagesUntilFullRefresh = 3;
+  unsigned currentPage = 1;
+  enum StatusBarOverlayPosition { Top, Bottom };
+  void renderStatusBarOverlay(GfxRenderer&, StatusBarOverlayPosition) {}
+  void renderPage();
+  void loadProgress();
+};
+#define malloc testMalloc
+@XTC_RENDER@
+#undef malloc
+@XTC_PROGRESS@
+
+class EpubReaderActivity : public ReaderActivity {
+ public:
+  struct Epub { int count = 3; int getSpineItemsCount() { return count; } std::string getCachePath() { return "cache"; } };
+  std::unique_ptr<Epub> epub = std::make_unique<Epub>();
+  std::unique_ptr<int> endOfBookOptions;
+  bool automaticPageTurnActive = false, pendingSyncSaveError = false;
+  unsigned long lastRenderCompleteMs = 0;
+  int currentSpineIndex = 0, nextPageNumber = 0, cachedSpineIndex = 0, cachedChapterTotalPageCount = 0;
+  std::optional<uint32_t> cachedVisibleTextOffset;
+  void restoreProgress() {
+@EPUB_PROGRESS@
+  }
+  void completeContentRender() {
+@EPUB_SUCCESS@
+  }
+  void onEndOfBookRendered();
+};
+@EPUB_END@
+
+class ReaderRemember : public testing::TestWithParam<const char*> {
+ protected:
+  void SetUp() override {
+    APP_STATE = {}; RECENT_BOOKS = {}; Storage.present = true; SETTINGS.font = 1; failAllocation = false;
+  }
+};
+TEST_P(ReaderRemember, NewAndExistingArePromotedOnlyAfterUsableRender) {
+  for (bool existing : {false, true}) {
+    ReaderActivity reader;
+    reader.bookPath = GetParam();
+    RECENT_BOOKS.paths = existing ? std::vector<std::string>{"other", GetParam()} : std::vector<std::string>{"other"};
+    const auto before = RECENT_BOOKS.paths;
+    reader.onEnter();
+    reader.rememberBookOnceRendered();
+    EXPECT_EQ(RECENT_BOOKS.paths, before);
+    EXPECT_TRUE(APP_STATE.openEpubPath.empty());
+    reader.markPageRendered();
+    reader.rememberBookOnceRendered();
+    EXPECT_EQ(RECENT_BOOKS.paths.front(), GetParam());
+    EXPECT_EQ(std::count(RECENT_BOOKS.paths.begin(), RECENT_BOOKS.paths.end(), GetParam()), 1);
+    EXPECT_EQ(APP_STATE.openEpubPath, GetParam());
+    const auto saves = APP_STATE.saves;
+    reader.rememberBookOnceRendered();
+    EXPECT_EQ(APP_STATE.saves, saves);
+    EXPECT_EQ(reader.progressWrites, 0);
+  }
+}
+TEST_P(ReaderRemember, MissingInvalidAndCancelledAttemptsPreserveExistingRecents) {
+  for (int failure : {0, 1, 2}) {
+    for (bool existing : {false, true}) {
+    ReaderActivity reader;
+    reader.bookPath = GetParam();
+    APP_STATE = {};
+    RECENT_BOOKS.paths = existing ? std::vector<std::string>{"other", GetParam()} : std::vector<std::string>{"other"};
+    const auto before = RECENT_BOOKS.paths;
+    Storage.present = failure != 0;
+    reader.loadSucceeds = failure != 1;
+    reader.onEnter();
+    // Cancellation before the render task completes also has no success publication.
+    reader.rememberBookOnceRendered();
+    EXPECT_EQ(RECENT_BOOKS.paths, before);
+    EXPECT_TRUE(APP_STATE.openEpubPath.empty());
+    EXPECT_EQ(reader.progressWrites, 0);
+    }
+  }
+}
+INSTANTIATE_TEST_SUITE_P(Formats, ReaderRemember, testing::Values("book.epub", "book.xtc", "book.txt"));
+
+TEST(ReaderSuccessBoundary, TxtFailureDoesNotPublishOrOverwriteByteCheckpoint) {
+  APP_STATE = {}; RECENT_BOOKS = {};
+  TxtReaderActivity reader;
+  reader.bookPath = "book.txt";
+  reader.pageReader.succeeds = false;
+  reader.renderBook();
+  reader.rememberBookOnceRendered();
+  EXPECT_TRUE(RECENT_BOOKS.paths.empty());
+  EXPECT_EQ(reader.progressWrites, 0);
+  reader.pageReader.succeeds = true;
+  reader.pageReader.advances = false;
+  reader.renderBook();
+  EXPECT_FALSE(reader.pageRendered.load());
+  reader.pageReader.advances = true;
+  reader.renderBook();
+  reader.rememberBookOnceRendered();
+  EXPECT_EQ(RECENT_BOOKS.paths.front(), "book.txt");
+  EXPECT_EQ(reader.savedAnchor, 123u);
+}
+TEST(ReaderSuccessBoundary, ValidEmptyTxtIsAUsableView) {
+  TxtReaderActivity reader;
+  reader.txt->bytes = 0;
+  reader.renderBook();
+  EXPECT_TRUE(reader.pageRendered.load());
+  EXPECT_EQ(reader.renderer.displays, 1);
+}
+TEST(ReaderSuccessBoundary, XtcReadAndAllocationFailuresDoNotPublish) {
+  XtcReaderActivity reader;
+  reader.xtc->readSucceeds = false;
+  reader.renderPage();
+  EXPECT_FALSE(reader.pageRendered.load());
+  reader.xtc->readSucceeds = true;
+  failAllocation = true;
+  reader.renderPage();
+  EXPECT_FALSE(reader.pageRendered.load());
+  failAllocation = false;
+  for (int depth : {1, 2}) {
+    reader.pageRendered = false;
+    reader.xtc->depth = depth;
+    reader.renderPage();
+    EXPECT_TRUE(reader.pageRendered.load());
+  }
+}
+TEST(ReaderSuccessBoundary, EpubContentAndValidEndViewPublishButEmptySpineDoesNot) {
+  EpubReaderActivity reader;
+  reader.endOfBookOptions = std::make_unique<int>(1);
+  reader.epub->count = 0;
+  reader.onEndOfBookRendered();
+  EXPECT_FALSE(reader.pageRendered.load());
+  reader.epub->count = 3;
+  reader.onEndOfBookRendered();
+  EXPECT_TRUE(reader.pageRendered.load());
+  reader.pageRendered = false;
+  reader.completeContentRender();
+  EXPECT_TRUE(reader.pageRendered.load());
+}
+
+TEST(ReaderSuccessBoundary, EpubExistingByteAnchorAndPageProgressRemainUnchangedByRemembering) {
+  EpubReaderActivity reader;
+  Storage.bytes = {1, 0, 12, 0, 30, 0, 0x34, 0x12, 0, 0};
+  reader.restoreProgress();
+  ASSERT_EQ(reader.cachedVisibleTextOffset, 0x1234u);
+  EXPECT_EQ(reader.currentSpineIndex, 1);
+  EXPECT_EQ(reader.nextPageNumber, 12);
+  EXPECT_EQ(reader.cachedChapterTotalPageCount, 30);
+  reader.completeContentRender();
+  reader.rememberBookOnceRendered();
+  EXPECT_EQ(reader.cachedVisibleTextOffset, 0x1234u);
+  EXPECT_EQ(reader.nextPageNumber, 12);
+}
+TEST(ReaderSuccessBoundary, XtcExistingProgressRestoresBeforeRemembering) {
+  XtcReaderActivity reader;
+  Storage.bytes = {1, 0, 0, 0};
+  reader.currentPage = 0;
+  reader.loadProgress();
+  ASSERT_EQ(reader.currentPage, 1u);
+  reader.renderPage();
+  reader.rememberBookOnceRendered();
+  EXPECT_EQ(reader.currentPage, 1u);
+}
+TEST(ReaderSuccessBoundary, RenderTaskPublishesSuccessAndMainRemembersOnce) {
+  ReaderActivity reader;
+  RECENT_BOOKS = {};
+  std::thread rendering([&] { reader.markPageRendered(); });
+  while (!reader.pageRendered.load(std::memory_order_acquire)) std::this_thread::yield();
+  reader.rememberBookOnceRendered();
+  rendering.join();
+  reader.rememberBookOnceRendered();
+  ASSERT_EQ(RECENT_BOOKS.paths.size(), 1u);
+}
+TEST(ReaderSuccessBoundary, ExitFlushesCompletedRenderWithoutPromotingUnrenderedAttempt) {
+  APP_STATE = {}; RECENT_BOOKS = {};
+  ReaderActivity failed;
+  failed.onExit();
+  EXPECT_TRUE(RECENT_BOOKS.paths.empty());
+  ReaderActivity rendered;
+  rendered.markPageRendered();
+  rendered.onExit();
+  ASSERT_EQ(RECENT_BOOKS.paths.size(), 1u);
+  EXPECT_EQ(APP_STATE.openEpubPath, rendered.bookPath);
+  EXPECT_EQ(rendered.progressWrites, 0);
+}
