@@ -17,6 +17,7 @@
 #include "CrossPointSettings.h"
 #include "FontInstaller.h"
 #include "OpdsServerStore.h"
+#include "ProtectedPaths.h"
 #include "SdCardFontSystem.h"
 #include "SettingsList.h"
 #include "WebDAVHandler.h"
@@ -61,21 +62,9 @@ size_t wsLastCompleteSize = 0;
 unsigned long wsLastCompleteAt = 0;
 
 String normalizeWebPath(const String& inputPath) {
-  if (inputPath.isEmpty() || inputPath == "/") {
-    return "/";
-  }
-  std::string normalized = FsHelpers::normalisePath(inputPath.c_str());
-  String result = normalized.c_str();
-  if (result.isEmpty()) {
-    return "/";
-  }
-  if (!result.startsWith("/")) {
-    result = "/" + result;
-  }
-  if (result.length() > 1 && result.endsWith("/")) {
-    result = result.substring(0, result.length() - 1);
-  }
-  return result;
+  std::string normalized;
+  if (!protectedpaths::normalizePath(std::string_view(inputPath.c_str(), inputPath.length()), normalized)) return "";
+  return normalized.c_str();
 }
 
 bool isProtectedItemName(const String& name) {
@@ -480,6 +469,16 @@ void CrossPointWebServer::scanFiles(const char* path, const std::function<void(F
     file.getName(name, sizeof(name));
     auto fileName = String(name);
 
+    String childPath = String(path);
+    if (!childPath.endsWith("/")) childPath += "/";
+    childPath += fileName;
+    // Credential siblings stay private even with hidden-file browsing enabled.
+    if (protectedpaths::isSensitivePath(std::string_view(childPath.c_str(), childPath.length()))) {
+      file.close();
+      file = root.openNextFile();
+      continue;
+    }
+
     // Skip hidden items (starting with ".")
     bool shouldHide = !SETTINGS.showHiddenFiles && fileName.startsWith(".");
 
@@ -530,6 +529,10 @@ void CrossPointWebServer::handleFileListData() const {
     currentPath = normalizeWebPath(server->arg("path"));
   }
 
+  if (currentPath.isEmpty() || protectedpaths::isSensitivePath(currentPath.c_str())) {
+    server->send(403, "text/plain", "Cannot access protected items");
+    return;
+  }
   server->setContentLength(CONTENT_LENGTH_UNKNOWN);
   server->send(200, "application/json", "");
   server->sendContent("[");
@@ -578,7 +581,7 @@ void CrossPointWebServer::handleDownload() const {
   }
 
   const String itemName = itemPath.substring(itemPath.lastIndexOf('/') + 1);
-  if (itemName.startsWith(".")) {
+  if (itemName.startsWith(".") || protectedpaths::isSensitivePath(itemPath.c_str())) {
     server->send(403, "text/plain", "Cannot access system files");
     return;
   }
@@ -717,6 +720,12 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
     String filePath = state.path;
     if (!filePath.endsWith("/")) filePath += "/";
     filePath += state.fileName;
+
+    if (state.path.isEmpty() ||
+        protectedpaths::isSensitivePath(std::string_view(filePath.c_str(), filePath.length()))) {
+      state.error = "Invalid or protected path";
+      return;
+    }
 
     // Check if file already exists - SD operations can be slow
     resetTaskWatchdogIfSubscribed();
@@ -861,6 +870,11 @@ void CrossPointWebServer::handleCreateFolder() const {
   if (!folderPath.endsWith("/")) folderPath += "/";
   folderPath += folderName;
 
+  if (parentPath.isEmpty() ||
+      protectedpaths::isSensitivePath(std::string_view(folderPath.c_str(), folderPath.length()))) {
+    server->send(403, "text/plain", "Cannot create protected item");
+    return;
+  }
   LOG_DBG("WEB", "Creating folder: %s", folderPath.c_str());
 
   // Check if already exists
@@ -897,7 +911,8 @@ void CrossPointWebServer::handleRename() const {
     server->send(400, "text/plain", "New name cannot be empty");
     return;
   }
-  if (newName.indexOf('/') >= 0 || newName.indexOf('\\') >= 0) {
+  if (!FsHelpers::isSafePathComponent(newName) ||
+      !protectedpaths::validPathBytes(std::string_view(newName.c_str(), newName.length()))) {
     server->send(400, "text/plain", "Invalid file name");
     return;
   }
@@ -907,7 +922,7 @@ void CrossPointWebServer::handleRename() const {
   }
 
   const String itemName = itemPath.substring(itemPath.lastIndexOf('/') + 1);
-  if (isProtectedItemName(itemName)) {
+  if (isProtectedItemName(itemName) || protectedpaths::isSensitivePath(itemPath.c_str())) {
     server->send(403, "text/plain", "Cannot rename protected item");
     return;
   }
@@ -942,6 +957,12 @@ void CrossPointWebServer::handleRename() const {
   }
   newPath += newName;
 
+  if (protectedpaths::isSensitivePath(itemPath.c_str()) ||
+      protectedpaths::isSensitivePath(std::string_view(newPath.c_str(), newPath.length()))) {
+    file.close();
+    server->send(403, "text/plain", "Cannot move protected item");
+    return;
+  }
   if (Storage.exists(newPath.c_str())) {
     file.close();
     server->send(409, "text/plain", "Target already exists");
@@ -980,7 +1001,7 @@ void CrossPointWebServer::handleMove() const {
   }
 
   const String itemName = itemPath.substring(itemPath.lastIndexOf('/') + 1);
-  if (isProtectedItemName(itemName)) {
+  if (isProtectedItemName(itemName) || protectedpaths::isSensitivePath(itemPath.c_str())) {
     server->send(403, "text/plain", "Cannot move protected item");
     return;
   }
@@ -1033,6 +1054,12 @@ void CrossPointWebServer::handleMove() const {
   if (newPath == itemPath) {
     file.close();
     server->send(200, "text/plain", "Already in destination");
+    return;
+  }
+  if (protectedpaths::isSensitivePath(itemPath.c_str()) ||
+      protectedpaths::isSensitivePath(std::string_view(newPath.c_str(), newPath.length()))) {
+    file.close();
+    server->send(403, "text/plain", "Cannot move protected item");
     return;
   }
   if (Storage.exists(newPath.c_str())) {
@@ -1109,7 +1136,7 @@ void CrossPointWebServer::handleDelete() const {
     const String itemName = itemPath.substring(itemPath.lastIndexOf('/') + 1);
 
     // Hidden/system files are protected
-    if (itemName.startsWith(".")) {
+    if (itemName.startsWith(".") || protectedpaths::isSensitivePath(itemPath.c_str())) {
       failedItems += itemPath + " (hidden/system file); ";
       allSuccess = false;
       continue;
@@ -1683,6 +1710,11 @@ void CrossPointWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* 
           if (!filePath.endsWith("/")) filePath += "/";
           filePath += wsUploadFileName;
 
+          if (wsUploadPath.isEmpty() ||
+              protectedpaths::isSensitivePath(std::string_view(filePath.c_str(), filePath.length()))) {
+            wsServer->sendTXT(num, "ERROR:Invalid or protected path");
+            return;
+          }
           resetTaskWatchdogIfSubscribed();
           if (Storage.exists(filePath.c_str())) {
             LOG_DBG("WS", "Upload collision: %s", filePath.c_str());

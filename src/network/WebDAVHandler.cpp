@@ -4,6 +4,7 @@
 #include <HalStorage.h>
 #include <Logging.h>
 
+#include "ProtectedPaths.h"
 #include "util/BookCacheUtils.h"
 #include "util/TaskWatchdog.h"
 
@@ -109,8 +110,10 @@ void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
 
   } else if (raw.status == RAW_ABORTED) {
     if (_putFile) _putFile.close();
-    String tempPath = _putPath + ".davtmp";
-    Storage.remove(tempPath.c_str());
+    if (!isProtectedPath(_putPath)) {
+      String tempPath = _putPath + ".davtmp";
+      Storage.remove(tempPath.c_str());
+    }
     _putOk = false;
   }
 }
@@ -176,6 +179,10 @@ void WebDAVHandler::handlePropfind(WebServer& s) {
 
   LOG_DBG("DAV", "PROPFIND %s depth=%d", path.c_str(), depth);
 
+  if (isProtectedPath(path)) {
+    s.send(403, "text/plain", "Forbidden");
+    return;
+  }
   // Check if path exists
   if (!Storage.exists(path.c_str()) && path != "/") {
     s.send(404, "text/plain", "Not Found");
@@ -702,8 +709,9 @@ String WebDAVHandler::getRequestPath(WebServer& s) const {
   String uri = s.uri();
   String decoded = WebServer::urlDecode(uri);
 
-  // Normalize using FsHelpers
-  std::string normalized = FsHelpers::normalisePath(decoded.c_str());
+  // Normalize before passing decoded bytes to C-string filesystem APIs.
+  std::string normalized;
+  if (!protectedpaths::normalizePath(std::string_view(decoded.c_str(), decoded.length()), normalized)) return "";
   String result = normalized.c_str();
 
   if (result.isEmpty()) return "/";
@@ -734,7 +742,8 @@ String WebDAVHandler::getDestinationPath(WebServer& s) const {
   }
 
   String decoded = WebServer::urlDecode(dest);
-  std::string normalized = FsHelpers::normalisePath(decoded.c_str());
+  std::string normalized;
+  if (!protectedpaths::normalizePath(std::string_view(decoded.c_str(), decoded.length()), normalized)) return "";
   String result = normalized.c_str();
 
   if (result.isEmpty()) return "/";
@@ -776,6 +785,7 @@ void WebDAVHandler::urlEncodePath(const String& path, String& out) const {
 }
 
 bool WebDAVHandler::isProtectedPath(const String& path) const {
+  if (protectedpaths::isSensitivePath(std::string_view(path.c_str(), path.length()))) return true;
   // Check every segment of the path, not just the last one.
   // This prevents access to e.g. /.hidden/somefile or /System Volume Information/foo
   int start = 0;

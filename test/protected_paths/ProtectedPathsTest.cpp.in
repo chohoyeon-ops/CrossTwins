@@ -1,0 +1,250 @@
+#include <gtest/gtest.h>
+#include <algorithm>
+#include <cctype>
+#include <cstdio>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
+#include "network/ProtectedPaths.h"
+#define LOG_DBG(...) ((void)0)
+#define LOG_ERR(...) ((void)0)
+void resetTaskWatchdogIfSubscribed() {}
+void clearBookCache(const char*) {}
+unsigned long millis() { return 0; }
+class String : public std::string {
+ public:
+  using std::string::string;
+  String(const std::string& s) : std::string(s) {}
+  bool isEmpty() const { return empty(); }
+  size_t length() const { return size(); }
+  bool startsWith(const char* s) const { return starts_with(s); }
+  bool endsWith(const char* s) const { return ends_with(s); }
+  bool equals(const char* s) const { return *this == s; }
+  int indexOf(char c, int pos = 0) const { auto n = find(c, pos); return n == npos ? -1 : static_cast<int>(n); }
+  int indexOf(const char* c) const { auto n = find(c); return n == npos ? -1 : static_cast<int>(n); }
+  int lastIndexOf(char c) const { auto n = rfind(c); return n == npos ? -1 : static_cast<int>(n); }
+  String substring(int first, int last = -1) const { return substr(first, last < 0 ? npos : last - first); }
+  char charAt(size_t n) const { return (*this)[n]; }
+  void trim() { while (!empty() && std::isspace(static_cast<unsigned char>(back()))) pop_back();
+    while (!empty() && std::isspace(static_cast<unsigned char>(front()))) erase(0, 1); }
+};
+namespace FsHelpers {
+@COMPONENT@
+bool isSafePathComponent(const String& s) { return isSafePathComponent(std::string_view(s.data(), s.size())); }
+}
+constexpr const char* HIDDEN_ITEMS[] = {"System Volume Information", "XTCache"};
+struct HalFile {
+  bool opened = false, dir = false;
+  std::string path;
+  explicit operator bool() const { return opened; }
+  bool isDirectory() const { return dir; }
+  void close() { opened = false; }
+  HalFile openNextFile() { return {}; }
+  bool rename(const char*);
+  size_t write(const void*, size_t n);
+};
+struct StorageStub {
+  std::map<std::string, bool> entries;
+  std::vector<std::string> mutations;
+  std::vector<std::string> reads;
+  bool exists(const char* p) const { return entries.contains(p); }
+  HalFile open(const char* p) { reads.push_back(p); return {exists(p), entries[p], p}; }
+  bool openFileForWrite(const char*, const String& p, HalFile& f) {
+    mutations.push_back("write:" + p); entries[p] = false; f = {true, false, p}; return true;
+  }
+  bool mkdir(const char* p) { mutations.push_back("mkdir:" + std::string(p)); entries[p] = true; return true; }
+  bool remove(const char* p) { mutations.push_back("remove:" + std::string(p)); entries.erase(p); return true; }
+  bool rmdir(const char* p) { return remove(p); }
+} Storage;
+bool HalFile::rename(const char* p) { Storage.mutations.push_back("rename:" + std::string(p));
+  Storage.entries.erase(path); Storage.entries[p] = dir; return true; }
+size_t HalFile::write(const void*, size_t n) { Storage.mutations.push_back("data:" + path); return n; }
+struct HTTPUpload { String filename; };
+struct WebServer {
+  std::map<std::string, String> args;
+  String requestUri, destination;
+  int status = 0;
+  HTTPUpload incoming;
+  bool hasArg(const char* key) const { return args.contains(key); }
+  String arg(const char* key) { return args[key]; }
+  HTTPUpload& upload() { return incoming; }
+  String uri() const { return requestUri; }
+  String header(const char*) const { return destination; }
+  template<class... Args> void send(int code, Args&&...) { status = code; }
+  static String urlDecode(const String& input) {
+    String out;
+    for (size_t i = 0; i < input.size(); ++i) {
+      if (input[i] == '%' && i + 2 < input.size()) {
+        unsigned b; if (std::sscanf(input.substr(i + 1, 2).c_str(), "%2x", &b) == 1) {
+          out += static_cast<char>(b); i += 2; continue;
+        }
+      }
+      out += input[i];
+    }
+    return out;
+  }
+};
+@WEB_NORMALIZE@
+class CrossPointWebServer {
+ public:
+  std::unique_ptr<WebServer> server = std::make_unique<WebServer>();
+  struct UploadState { String fileName, path, error; size_t size=0, bufferPos=0; bool success=false; HalFile file; };
+  void handleCreateFolder() const;
+  void handleRename() const;
+  void handleMove() const;
+  void handleDownload() const;
+  void uploadBegin(UploadState& state) {
+    const auto& upload = server->upload();
+    unsigned long uploadStartTime=0, lastLoggedSize=0, totalWriteTime=0, writeCount=0;
+    (void)uploadStartTime; (void)lastLoggedSize; (void)totalWriteTime; (void)writeCount;
+@WEB_UPLOAD@
+  }
+};
+@WEB_MKDIR@
+@WEB_RENAME@
+@WEB_MOVE@
+@WEB_DOWNLOAD@
+}
+struct PathValue { String value; template<class T> T as() const { return value; } };
+bool deletePaths(const std::vector<PathValue>& paths) {
+  bool allSuccess = true; String failedItems;
+@WEB_DELETE@
+  return allSuccess;
+}
+struct { template<class... Args> void sendTXT(Args&&...) {} } ws;
+auto* wsServer = &ws;
+String wsUploadPath, wsUploadFileName;
+HalFile wsUploadFile;
+size_t wsUploadSize=1;
+bool wsUploadInProgress=false;
+uint8_t wsUploadClientNum=255;
+void wsStart() { uint8_t num=0;
+@WS_WRITE@
+}
+enum { RAW_START, RAW_WRITE, RAW_END, RAW_ABORTED };
+struct HTTPRaw { int status; const uint8_t* buf=nullptr; size_t currentSize=1, totalSize=1; };
+class WebDAVHandler {
+ public:
+  String _putPath;
+  bool _putOk=false, _putExisted=false;
+  HalFile _putFile;
+  String getRequestPath(WebServer&) const;
+  String getDestinationPath(WebServer&) const;
+  bool isProtectedPath(const String&) const;
+  void raw(WebServer&, const String&, HTTPRaw&);
+};
+@DAV_PATH@
+@DAV_GUARD@
+@DAV_RAW@
+
+TEST(ProtectedPaths, CredentialsVariantsAndSiblingsAreDenied) {
+  for (auto p : {"/.crosspoint/wifi.json", "/.CrossPoint/OPDS.JSON", "/.crosspoint/koreader.json.bak",
+       "/.crosspoint/wifi.json.tmp", "/.crosspoint/wifi.json.davtmp", "/.crosspoint/wifi.json.",
+       "/ .crosspoint./ wifi.json ", "//.crosspoint//./wifi.json", "/Books/../../.crosspoint/wifi.json",
+       "/.crosspoint/../.crosspoint/opds.json", "/CROSSP~1/wifi.json", "/.crosspoint/WIFI~1.JSO"})
+    EXPECT_TRUE(protectedpaths::isSensitivePath(p)) << p;
+}
+TEST(ProtectedPaths, KoreanAndOrdinaryFilesStayAccessible) {
+  for (auto p : {"/Books/a.epub", "/책/한글 책.txt", "/설정/개인.json", "/Books/wifi.json",
+       "/.crosspoint/settings.json", "/Books/Photos/IMG~1.JPG", "/Books/a~b.epub"})
+    EXPECT_FALSE(protectedpaths::isSensitivePath(p)) << p;
+}
+TEST(ProtectedPaths, InvalidBytesAndComponentsFailClosed) {
+  for (std::string p : {std::string(""), std::string("/Books\\..\\.crosspoint/wifi.json"), std::string("C:/wifi.json"),
+       std::string("/Books/")+char(0x80), std::string("/Books/\xC0\xAE"), std::string("/Books/\xED\xA0\x80"),
+       std::string("/Books/\xF4\x90\x80\x80"), std::string("/Books/\xE3\x80"), std::string("/Books\0/x",9)})
+    EXPECT_TRUE(protectedpaths::isSensitivePath(p));
+  for (auto name : {"", ".", "..", "../x", "nested/../x", "/x", "a/b", "a\\b"})
+    EXPECT_FALSE(FsHelpers::isSafePathComponent(String(name))) << name;
+}
+TEST(ProtectedPaths, HttpAndWebsocketPersistenceGuardFinalConstructedPath) {
+  for (auto parent : {"/.crosspoint", "/CROSSP~1", "/Books/../.CrossPoint .", "/ .crosspoint", "/Books\\.."}) {
+    Storage = {};
+    CrossPointWebServer web;
+    web.server->args["path"] = parent;
+    web.server->incoming.filename = "wifi.json.tmp";
+    CrossPointWebServer::UploadState state;
+    web.uploadBegin(state);
+    EXPECT_FALSE(state.error.isEmpty()) << parent;
+    EXPECT_TRUE(Storage.mutations.empty());
+    wsUploadPath = normalizeWebPath(parent); wsUploadFileName = "wifi.json.tmp";
+    wsStart();
+    EXPECT_TRUE(Storage.mutations.empty());
+  }
+  for (auto name : {"normal.json", "한국어 설정.json"}) {
+    Storage = {}; CrossPointWebServer web;
+    web.server->args["path"] = "/설정"; web.server->incoming.filename = name;
+    CrossPointWebServer::UploadState state; web.uploadBegin(state);
+    EXPECT_TRUE(state.error.isEmpty()); ASSERT_EQ(Storage.mutations.size(), 1U);
+    EXPECT_EQ(Storage.mutations[0], "write:/설정/" + std::string(name));
+    Storage = {}; wsUploadPath = "/설정"; wsUploadFileName = name; wsStart();
+    ASSERT_EQ(Storage.mutations.size(), 1U);
+  }
+}
+TEST(ProtectedPaths, HttpRenameMoveAndMkdirCannotTargetCredentials) {
+  CrossPointWebServer web;
+  Storage = {}; Storage.entries["/.crosspoint/ordinary.json"] = false;
+  web.server->args = {{"path", "/.crosspoint/ordinary.json"}, {"name", "wifi.json.tmp"}};
+  web.handleRename(); EXPECT_EQ(web.server->status,403); EXPECT_TRUE(Storage.mutations.empty());
+  Storage = {}; Storage.entries["/Books/wifi.json"] = false; Storage.entries["/ .crosspoint"] = true;
+  Storage.entries["/.crosspoint"] = true;
+  web.server->args = {{"path", "/Books/wifi.json"}, {"dest", "/ .crosspoint"}};
+  web.handleMove(); EXPECT_EQ(web.server->status,403); EXPECT_TRUE(Storage.mutations.empty());
+  web.server->args = {{"path", "/.crosspoint"}, {"name", "opds.json"}};
+  web.handleCreateFolder(); EXPECT_EQ(web.server->status,403); EXPECT_TRUE(Storage.mutations.empty());
+}
+TEST(ProtectedPaths, ActualRenamePreservesKoreanNamesAndRejectsInvalidComponents) {
+  for (auto name : {".", "..", "../escape", "a/b", "a\\b", ""}) {
+    Storage = {}; Storage.entries["/Books/old.json"] = false; CrossPointWebServer web;
+    web.server->args = {{"path", "/Books/old.json"}, {"name", name}};
+    web.handleRename(); EXPECT_GE(web.server->status,400); EXPECT_TRUE(Storage.mutations.empty());
+  }
+  Storage = {}; Storage.entries["/Books/old.json"] = false; CrossPointWebServer web;
+  web.server->args = {{"path", "/Books/old.json"}, {"name", "한국어.json"}};
+  web.handleRename(); EXPECT_EQ(web.server->status,200);
+  ASSERT_EQ(Storage.mutations.size(),1U); EXPECT_EQ(Storage.mutations[0],"rename:/Books/한국어.json");
+}
+TEST(ProtectedPaths, HttpDownloadGuardsBeforeOpeningCredentialFiles) {
+  for (auto path : {"/.crosspoint/wifi.json", "/ .CrossPoint ./ OPDS.JSON ", "/CROSSP~1/koreader.json",
+       "/Books/../.crosspoint/wifi.json.tmp", "/.crosspoint/WIFI~1.JSO"}) {
+    Storage = {}; Storage.entries[normalizeWebPath(path)] = false; CrossPointWebServer web;
+    web.server->args["path"] = path; web.handleDownload();
+    EXPECT_EQ(web.server->status, 403); EXPECT_TRUE(Storage.reads.empty());
+  }
+  Storage = {}; Storage.entries["/Books/한글.json"] = false; CrossPointWebServer web;
+  web.server->args["path"] = "/Books/한글.json"; web.handleDownload();
+  ASSERT_EQ(Storage.reads.size(), 1U); EXPECT_EQ(Storage.reads[0], "/Books/한글.json");
+}
+TEST(ProtectedPaths, HttpUploadRejectsMalformedNamesBeforePersistence) {
+  for (const auto& name : {std::string("bad\0name", 8), std::string("\xED\xA0\x80"), std::string("../wifi.json"),
+       std::string("."), std::string(".."), std::string(""), std::string("C:/file"), std::string("a\\b")}) {
+    Storage = {}; CrossPointWebServer web; web.server->args["path"] = "/Books";
+    web.server->incoming.filename = name; CrossPointWebServer::UploadState state; web.uploadBegin(state);
+    EXPECT_FALSE(state.error.isEmpty()); EXPECT_TRUE(Storage.mutations.empty());
+  }
+}
+TEST(ProtectedPaths, HttpDeleteGuardsEveryBatchItemBeforePersistence) {
+  Storage = {};
+  EXPECT_FALSE(deletePaths({{"/.crosspoint/wifi.json"}, {"/CROSSP~1/opds.json.bak"},
+                           {"/Books/../.crosspoint/koreader.json"}}));
+  EXPECT_TRUE(Storage.reads.empty()); EXPECT_TRUE(Storage.mutations.empty());
+  Storage.entries["/Books/한글.json"] = false;
+  EXPECT_TRUE(deletePaths({{"/Books/한글.json"}}));
+  ASSERT_EQ(Storage.mutations.size(), 1U); EXPECT_EQ(Storage.mutations[0], "remove:/Books/한글.json");
+}
+TEST(ProtectedPaths, WebdavDecodedRequestAndDestinationBlockAliasesAndUtf8Attacks) {
+  WebDAVHandler dav; WebServer s;
+  for (auto uri : {"/%2ecrosspoint/wifi.json", "/CROSSP~1/opds.json", "/Books/%2e%2e/.crosspoint/koreader.json",
+       "/Books/%5c../.crosspoint/wifi.json", "/Books/%00/.crosspoint/wifi.json", "/Books/%c0%ae"}) {
+    s.requestUri = uri; s.destination = "http://reader" + std::string(uri);
+    EXPECT_TRUE(dav.isProtectedPath(dav.getRequestPath(s))) << uri;
+    EXPECT_TRUE(dav.isProtectedPath(dav.getDestinationPath(s))) << uri;
+    Storage = {}; HTTPRaw raw{RAW_START}; dav.raw(s,"",raw);
+    EXPECT_FALSE(dav._putOk); EXPECT_TRUE(Storage.mutations.empty());
+    raw.status = RAW_ABORTED; dav.raw(s,"",raw); EXPECT_TRUE(Storage.mutations.empty());
+  }
+  s.requestUri = "/책/%ED%95%9C%EA%B8%80.json";
+  EXPECT_EQ(dav.getRequestPath(s),"/책/한글.json");
+  EXPECT_FALSE(dav.isProtectedPath(dav.getRequestPath(s)));
+}
