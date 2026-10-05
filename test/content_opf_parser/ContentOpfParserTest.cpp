@@ -14,6 +14,27 @@ void parse(ContentOpfParser& parser, const std::string& xml) {
 
 }  // namespace
 
+TEST(ContentOpfParserMetadata, KoreanMetadataSurvivesXmlAndUtf8ChunkBoundaries) {
+  const std::string xml =
+      R"(<package xmlns:dc="urn:dc"><metadata><dc:title>긴 한글 제목 &amp; English</dc:title><dc:creator>홍길동</dc:creator><dc:creator>김작가</dc:creator><dc:language>ko</dc:language></metadata></package>)";
+  ContentOpfParser parser("", "", xml.size(), nullptr);
+  ASSERT_TRUE(parser.setup());
+  for (size_t offset = 0; offset < xml.size(); offset += 7) {
+    const size_t bytes = std::min<size_t>(7, xml.size() - offset);
+    ASSERT_EQ(parser.write(reinterpret_cast<const uint8_t*>(xml.data() + offset), bytes), bytes);
+  }
+  EXPECT_EQ(parser.title, "긴 한글 제목 & English");
+  EXPECT_EQ(parser.author, "홍길동, 김작가");
+  EXPECT_EQ(parser.language, "ko");
+}
+
+TEST(ContentOpfParserMetadata, IncompleteXmlIsRejectedInsteadOfReportedComplete) {
+  const std::string xml = "<package><metadata><title>incomplete";
+  ContentOpfParser parser("", "", xml.size(), nullptr);
+  ASSERT_TRUE(parser.setup());
+  EXPECT_EQ(parser.write(reinterpret_cast<const uint8_t*>(xml.data()), xml.size()), 0u);
+}
+
 TEST(ContentOpfParserMetadata, EntityCallbackDoesNotSplitOneAuthor) {
   const std::string xml =
       R"(<package xmlns:dc="urn:dc"><metadata><dc:creator>&#201;mile Zola</dc:creator></metadata></package>)";
