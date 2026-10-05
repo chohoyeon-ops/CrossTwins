@@ -83,3 +83,4 @@ add_subdirectory(epub_spine_chunks)
 add_subdirectory(framebuffer_loan)
 
 add_subdirectory(protected_paths)
+add_subdirectory(settings_password)

@@ -1265,7 +1265,14 @@ void CrossPointWebServer::handleGetSettings() const {
       }
       case SettingType::STRING: {
         doc["type"] = "string";
-        if (s.stringGetter) {
+        if (s.obfuscated) {
+          // General settings responses expose credential presence, never the secret.
+          doc["value"] = nullptr;
+          doc["hasPassword"] =
+              s.stringGetter
+                  ? !s.stringGetter().empty()
+                  : s.stringMaxLen > 0 && *(reinterpret_cast<const char*>(&SETTINGS) + s.stringOffset) != '\0';
+        } else if (s.stringGetter) {
           doc["value"] = s.stringGetter();
         } else if (s.stringMaxLen > 0) {
           doc["value"] = reinterpret_cast<const char*>(&SETTINGS) + s.stringOffset;
@@ -1352,6 +1359,9 @@ void CrossPointWebServer::handlePostSettings() {
         break;
       }
       case SettingType::STRING: {
+        // A redacted GET value echoed back is not an instruction to clear a password.
+        // Only an explicit string (including "") changes a credential.
+        if (s.obfuscated && !doc[s.key].is<std::string>()) continue;
         const std::string val = doc[s.key].as<std::string>();
         if (s.stringSetter) {
           s.stringSetter(val);
