@@ -1,0 +1,238 @@
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <array>
+#include <cstdio>
+#include <cstring>
+#include <set>
+#include <string>
+#include <vector>
+
+#include "EpdFontFamily.h"
+#include "FsHelpers.h"
+#include "Utf8.h"
+#include "builtinFonts/pretendard_10_regular.h"
+#include "src/util/ScreenshotInfo.h"
+
+static unsigned long nowMs = 0;
+static unsigned long millis() { return nowMs; }
+
+// Only the input state queried by the unchanged navigator is substituted.
+class MappedInputManager {
+ public:
+  enum class Button { NavNext, NavPrevious, Left, Right, Up, Down };
+  std::set<Button> pressed, released, held;
+  unsigned long heldMs = 0;
+  bool wasPressed(Button b) const { return pressed.count(b) != 0; }
+  bool wasReleased(Button b) const { return released.count(b) != 0; }
+  bool isPressed(Button b) const { return held.count(b) != 0; }
+  unsigned long getHeldTime() const { return heldMs; }
+};
+@NAV_HEADER@
+@NAV_SOURCE@
+
+@RECENT_RECORD@
+class RecentBooksStore {
+ public:
+  @RECENT_LIMIT@
+  std::vector<RecentBook> recentBooks;
+  unsigned saves = 0;
+  void addBook(const std::string&, const std::string&, const std::string&, const std::string&);
+  bool pruneMissing();
+  static bool isMissing(const RecentBook&);
+  void saveToFile() { ++saves; }
+};
+struct ExistingFiles {
+  std::set<std::string> paths;
+  bool exists(const char* p) const { return paths.count(p) != 0; }
+} Storage;
+@RECENT_ADD@
+@RECENT_PRUNE@
+
+// Real Pretendard glyph advances and kerning; no replacement width algorithm.
+// SD fallback, bidi and display integration remain device validation items.
+class GfxRenderer {
+ public:
+  mutable unsigned measurements = 0;
+  int getTextWidth(int, const char* text, EpdFontFamily::Style style) const {
+    ++measurements;
+    static EpdFont font(&pretendard_10_regular);
+    static EpdFontFamily family(&font);
+    int w, h;
+    family.getTextDimensions(text, &w, &h, style);
+    return w;
+  }
+  std::string truncatedText(int, const char*, int, EpdFontFamily::Style = EpdFontFamily::REGULAR) const;
+};
+@TRUNCATE@
+
+class ScreenshotUtil {
+ public:
+  static void buildFilename(const ScreenshotInfo&, char*, size_t);
+};
+@SCREENSHOT@
+
+static bool validUtf8(const std::string& text) {
+  for (size_t i = 0; i < text.size();) {
+    const auto c = static_cast<unsigned char>(text[i]);
+    size_t n = c < 0x80 ? 1 : c >= 0xC2 && c <= 0xDF ? 2 : c >= 0xE0 && c <= 0xEF ? 3 : c >= 0xF0 && c <= 0xF4 ? 4 : 0;
+    if (!n || i + n > text.size()) return false;
+    for (size_t j = 1; j < n; ++j)
+      if ((static_cast<unsigned char>(text[i + j]) & 0xC0) != 0x80) return false;
+    i += n;
+  }
+  return true;
+}
+
+TEST(Phase2aNavigation, IndicesWrapAndHandleEmptyOrSingleLists) {
+  for (int count : {0, 1, 10}) {
+    for (int i = 0; i < std::max(1, count); ++i) {
+      EXPECT_EQ(ButtonNavigator::nextIndex(i, count), count ? (i + 1) % count : 0);
+      EXPECT_EQ(ButtonNavigator::previousIndex(i, count), count ? (i + count - 1) % count : 0);
+    }
+  }
+  EXPECT_EQ(ButtonNavigator::nextPageIndex(9, 10, 4), 0);
+  EXPECT_EQ(ButtonNavigator::previousPageIndex(0, 10, 4), 8);
+  EXPECT_EQ(ButtonNavigator::nextPageIndex(0, 10, 0), 0);
+}
+
+TEST(Phase2aNavigation, PressReleaseAndRepeatSemanticsRemainSeparate) {
+  MappedInputManager input;
+  ButtonNavigator::setMappedInputManager(input);
+  ButtonNavigator nav;
+  int index = 0;
+  auto next = [&] { index = ButtonNavigator::nextIndex(index, 3); };
+  auto previous = [&] { index = ButtonNavigator::previousIndex(index, 3); };
+  input.pressed = {MappedInputManager::Button::NavNext};
+  nav.onNextRelease(next);
+  EXPECT_EQ(index, 0);  // A release-driven caller does not navigate on press.
+  input.pressed.clear();
+  input.released = {MappedInputManager::Button::NavNext};
+  nav.onNextRelease(next);
+  EXPECT_EQ(index, 1);
+  input.released = {MappedInputManager::Button::NavPrevious};
+  nav.onPreviousRelease(previous);
+  EXPECT_EQ(index, 0);
+  input.released.clear();
+  input.held = {MappedInputManager::Button::NavNext};
+  input.heldMs = nowMs = 500;
+  nav.onNextContinuous(next);
+  EXPECT_EQ(index, 0);
+  input.heldMs = nowMs = 501;
+  nav.onNextContinuous(next);
+  EXPECT_EQ(index, 1);
+  nowMs = 1001;
+  nav.onNextContinuous(next);
+  EXPECT_EQ(index, 1);
+  nowMs = 1002;
+  nav.onNextContinuous(next);
+  EXPECT_EQ(index, 2);
+  input.held.clear();
+  input.released = {MappedInputManager::Button::NavNext};
+  nav.onNextRelease(next);
+  EXPECT_EQ(index, 2);  // Repeat consumes the release navigation.
+}
+
+TEST(Phase2aNavigation, BorrowedButtonListsHavePersistentBacking) {
+  const auto next = ButtonNavigator::getNextButtons();
+  const auto previous = ButtonNavigator::getPreviousButtons();
+  EXPECT_EQ(next.begin(), ButtonNavigator::getNextButtons().begin());
+  EXPECT_EQ(*next.begin(), MappedInputManager::Button::NavNext);
+  EXPECT_EQ(*previous.begin(), MappedInputManager::Button::NavPrevious);
+}
+
+TEST(Phase2aRecent, ReopenRotatesUpdatesMetadataAndRetainsStringBuffers) {
+  Storage.paths = {"a", "b", "c"};
+  RecentBooksStore store;
+  const std::string title(200, 't'), author(150, 'a'), cover(180, 'c');
+  for (const auto* p : {"a", "b", "c"}) store.addBook(p, title, author, cover);
+  const auto* titleBuffer = store.recentBooks[2].title.data();
+  const auto* authorBuffer = store.recentBooks[2].author.data();
+  const auto* coverBuffer = store.recentBooks[2].coverBmpPath.data();
+  store.addBook("a", title, author, cover);
+  ASSERT_EQ(store.recentBooks.size(), 3u);
+  EXPECT_EQ(store.recentBooks[0].path, "a");
+  EXPECT_EQ(store.recentBooks[1].path, "c");
+  EXPECT_EQ(store.recentBooks[2].path, "b");
+  EXPECT_EQ(store.recentBooks[0].title.data(), titleBuffer);
+  EXPECT_EQ(store.recentBooks[0].author.data(), authorBuffer);
+  EXPECT_EQ(store.recentBooks[0].coverBmpPath.data(), coverBuffer);
+  store.addBook("a", "new title", "new author", "new cover");
+  EXPECT_EQ(store.recentBooks[0].title, "new title");
+  EXPECT_EQ(store.recentBooks[0].author, "new author");
+  EXPECT_EQ(store.recentBooks[0].coverBmpPath, "new cover");
+  EXPECT_EQ(store.recentBooks.size(), 3u);
+  EXPECT_EQ(store.saves, 5u);
+}
+
+TEST(Phase2aRecent, EmptySingleCapacityAndMissingFilesPreserveOrdering) {
+  Storage.paths.clear();
+  RecentBooksStore store;
+  EXPECT_TRUE(store.recentBooks.empty());
+  for (int i = 0; i <= RecentBooksStore::MAX_RECENT_BOOKS; ++i) {
+    auto path = std::to_string(i);
+    Storage.paths.insert(path);
+    store.addBook(path, path, "", "");
+    EXPECT_EQ(store.recentBooks.size(), static_cast<size_t>(std::min(i + 1, RecentBooksStore::MAX_RECENT_BOOKS)));
+  }
+  EXPECT_EQ(store.recentBooks.front().path, "10");
+  EXPECT_EQ(store.recentBooks.back().path, "1");
+  store.addBook("1", "updated", "", "");
+  EXPECT_EQ(store.recentBooks.front().path, "1");
+  EXPECT_EQ(store.recentBooks[1].path, "10");
+  Storage.paths.erase("10");
+  store.addBook("1", "updated", "", "");
+  EXPECT_EQ(store.recentBooks.size(), 9u);
+  EXPECT_EQ(store.recentBooks[1].path, "9");
+}
+
+static std::string oldTruncate(const GfxRenderer& renderer, std::string text, int width) {
+  const char* dots = "\xe2\x80\xa6";
+  if (renderer.getTextWidth(0, text.c_str(), EpdFontFamily::REGULAR) <= width) return text;
+  while (!text.empty() && renderer.getTextWidth(0, (text + dots).c_str(), EpdFontFamily::REGULAR) >= width)
+    utf8RemoveLastChar(text);
+  return text + dots;
+}
+
+TEST(Phase2aTitles, MatchesPreviousTruncationWithRealPretendardMetrics) {
+  GfxRenderer renderer;
+  std::string longTitle;
+  for (int i = 0; i < 100; ++i) longTitle += "AV 한국어 제목 123 ";
+  for (const auto& title : std::vector<std::string>{"ASCII filename.epub", "한국어 긴 제목", "Mixed 한국어 123", longTitle}) {
+    for (int width = 1; width <= 320; ++width) {
+      const auto result = renderer.truncatedText(0, title.c_str(), width);
+      EXPECT_EQ(result, oldTruncate(renderer, title, width)) << width;
+      EXPECT_TRUE(validUtf8(result));
+      // Existing semantics return an ellipsis even if it alone cannot fit.
+      if (result != "\xe2\x80\xa6") EXPECT_LE(renderer.getTextWidth(0, result.c_str(), EpdFontFamily::REGULAR), width);
+    }
+  }
+  EXPECT_EQ(renderer.truncatedText(0, nullptr, 100), "");
+  EXPECT_EQ(renderer.truncatedText(0, "text", 0), "");
+}
+
+TEST(Phase2aTitles, LongTitleNeedsLogarithmicMeasurements) {
+  GfxRenderer renderer;
+  const std::string title(10000, 'W');
+  renderer.truncatedText(0, title.c_str(), 100);
+  EXPECT_LE(renderer.measurements, 17u);
+}
+
+TEST(Phase2aScreenshots, AsciiKoreanMixedLongAndNearLimitPathsStayValid) {
+  std::string longTitle;
+  for (int i = 0; i < 100; ++i) longTitle += "한국어";
+  for (const auto& title : std::vector<std::string>{"ASCII file", "한국어 제목", "Mixed 한국어 123", longTitle, std::string(61, 'a') + "한"}) {
+    ScreenshotInfo info;
+    info.readerType = ScreenshotInfo::ReaderType::Epub;
+    snprintf(info.title, sizeof(info.title), "%s", title.c_str());
+    info.spineIndex = 0;
+    info.currentPage = 7;
+    info.progressPercent = 42;
+    char path[256];
+    ScreenshotUtil::buildFilename(info, path, sizeof(path));
+    EXPECT_TRUE(validUtf8(path));
+    EXPECT_LT(strlen(path), sizeof(path));
+    EXPECT_EQ(std::string(path).find("/screenshots/"), 0u);
+    EXPECT_NE(std::string(path).find("_ch1_p7_42pct_"), std::string::npos);
+  }
+}
