@@ -1,0 +1,195 @@
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <cstdint>
+#include <set>
+#include <vector>
+
+static unsigned long nowMs = 0;
+static unsigned long millis() { return nowMs; }
+class MappedInputManager {
+ public:
+  enum class Button { NavNext, NavPrevious, Left, Right, Up, Down };
+  std::set<Button> pressed, released, held;
+  unsigned long heldMs = 0;
+  bool wasPressed(Button b) const { return pressed.count(b) != 0; }
+  bool wasReleased(Button b) const { return released.count(b) != 0; }
+  bool isPressed(Button b) const { return held.count(b) != 0; }
+  unsigned long getHeldTime() const { return heldMs; }
+};
+@NAV_HEADER@
+@NAV_SOURCE@
+
+namespace fui {
+struct ListNav {
+  int selected = 0;
+  int rows = 3;
+  int inputPageRows() const { return rows; }
+  int pageRows() const { return rows; }
+};
+}
+
+class UiListActivity {
+ public:
+  ButtonNavigator buttonNavigator;
+  fui::ListNav nav;
+  int count = 10, updates = 0;
+  int listCount() const { return count; }
+  fui::ListNav& activeNav() { return nav; }
+  void moveSelectionTo(int i) { nav.selected = i; ++updates; }
+  void navigateButtons();
+};
+@LIST_NAV@
+
+class LibraryListActivity {
+ public:
+  ButtonNavigator buttonNavigator;
+  fui::ListNav navs[2];
+  int count = 10, tab = 0, ring = 1, searches = 0;
+  bool degraded = false;
+  int listCount() const { return count; }
+  fui::ListNav& activeNav() { return navs[tab]; }
+  bool tabsFocused() const { return ring == 0; }
+  int ringPos() const { return ring; }
+  int selectedEntry() const { return ring - 1; }
+  void moveRingTo(int i) { ring = i; }
+  void openSearch() { ++searches; }
+  void stepTab(int) { tab = 1 - tab; }
+  void navigateButtons();
+};
+@LIBRARY_NAV@
+
+class HomeActivity {
+ public:
+  ButtonNavigator buttonNavigator;
+  std::vector<int> recentBooks{1, 2};
+  int selectorIndex = 0, updates = 0;
+  void requestUpdate() { ++updates; }
+  void navigate(int menuCount) {
+@HOME_NAV@
+  }
+};
+
+class Phase2bNavigation : public testing::Test {
+ protected:
+  MappedInputManager input;
+  using B = MappedInputManager::Button;
+  void SetUp() override {
+    nowMs = 0;
+    ButtonNavigator::setMappedInputManager(input);
+  }
+  void release(B b) { input = {}; input.released.insert(b); }
+  void hold(B b) { input = {}; input.held.insert(b); input.heldMs = 700; nowMs += 600; }
+};
+
+TEST_F(Phase2bNavigation, SingleMovesOnlyOnReleaseAndWraps) {
+  UiListActivity list;
+  input.pressed.insert(B::NavNext);
+  list.navigateButtons();
+  EXPECT_EQ(list.nav.selected, 0);
+  release(B::NavPrevious);
+  list.navigateButtons();
+  EXPECT_EQ(list.nav.selected, 9);
+  release(B::NavNext);
+  list.navigateButtons();
+  EXPECT_EQ(list.nav.selected, 0);
+}
+
+TEST_F(Phase2bNavigation, RapidReleaseNavigationAndSmallLists) {
+  UiListActivity list;
+  for (int i = 0; i < 31; ++i) { release(B::NavNext); list.navigateButtons(); }
+  EXPECT_EQ(list.nav.selected, 1);
+  for (int count : {0, 1}) {
+    list.count = count;
+    list.nav.selected = 0;
+    release(B::NavPrevious);
+    list.navigateButtons();
+    EXPECT_EQ(list.nav.selected, 0);
+  }
+}
+
+TEST_F(Phase2bNavigation, RepeatPagesAndReleaseDoesNotDoubleMove) {
+  UiListActivity list;
+  hold(B::NavNext);
+  list.navigateButtons();
+  EXPECT_EQ(list.nav.selected, 3);
+  hold(B::NavNext);
+  list.navigateButtons();
+  EXPECT_EQ(list.nav.selected, 6);
+  release(B::NavNext);
+  list.navigateButtons();
+  EXPECT_EQ(list.nav.selected, 6);
+  release(B::NavNext);
+  list.navigateButtons();
+  EXPECT_EQ(list.nav.selected, 7);
+  hold(B::NavPrevious);
+  list.navigateButtons();
+  EXPECT_EQ(list.nav.selected, 3);
+}
+
+TEST_F(Phase2bNavigation, LibraryTabSearchAndRowPagingRemainDistinct) {
+  LibraryListActivity list;
+  list.ring = 0;
+  release(B::NavPrevious);
+  list.navigateButtons();
+  EXPECT_EQ(list.searches, 1);
+  hold(B::NavNext);
+  list.navigateButtons();
+  EXPECT_EQ(list.tab, 1);
+  EXPECT_EQ(list.ring, 0);
+  release(B::NavNext);
+  list.navigateButtons();
+  EXPECT_EQ(list.ring, 0);
+  release(B::NavNext);
+  list.navigateButtons();
+  EXPECT_EQ(list.ring, 1);
+  list.navs[1].rows = 4;
+  hold(B::NavNext);
+  list.navigateButtons();
+  EXPECT_EQ(list.ring, 5);
+  hold(B::NavPrevious);
+  list.navigateButtons();
+  EXPECT_EQ(list.ring, 1);
+}
+
+TEST_F(Phase2bNavigation, HomeBandsPreservePressRepeatAndBoundaries) {
+  HomeActivity home;
+  input.pressed.insert(B::Right);
+  home.navigate(5);
+  EXPECT_EQ(home.selectorIndex, 2);
+  input = {}; input.pressed.insert(B::Left);
+  home.navigate(5);
+  EXPECT_EQ(home.selectorIndex, 4);
+  hold(B::Right);
+  home.navigate(5);
+  EXPECT_EQ(home.selectorIndex, 2);
+  release(B::Right);
+  home.navigate(5);
+  EXPECT_EQ(home.selectorIndex, 2);
+  input = {}; input.pressed.insert(B::Up);
+  home.navigate(5);
+  EXPECT_EQ(home.selectorIndex, 1);
+  home.recentBooks.clear();
+  home.navigate(3);
+  EXPECT_EQ(home.selectorIndex, 1);
+}
+
+TEST_F(Phase2bNavigation, ReturningDestroyingAndRecreatingDoesNotRetainCallbacks) {
+  {
+    UiListActivity list;
+    release(B::NavNext);
+    list.navigateButtons();
+    EXPECT_EQ(list.updates, 1);
+    input = {};
+    list.navigateButtons();
+    EXPECT_EQ(list.updates, 1);
+  }
+  UiListActivity recreated;
+  release(B::NavNext);
+  recreated.navigateButtons();
+  EXPECT_EQ(recreated.nav.selected, 1);
+  LibraryListActivity library;
+  release(B::NavPrevious);
+  library.navigateButtons();
+  EXPECT_EQ(library.ring, 10);
+}

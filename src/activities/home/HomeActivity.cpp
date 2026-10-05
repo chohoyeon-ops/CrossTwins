@@ -391,11 +391,16 @@ void HomeActivity::loop() {
                                          [&cycleBand, bookCount] { cycleBand(0, bookCount, -1); });
     buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Down},
                                          [&cycleBand, bookCount] { cycleBand(0, bookCount, +1); });
-    buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Left}, [&cycleBand, bookCount, menuCount] {
-      cycleBand(bookCount, menuCount - bookCount, -1);
+    // Both callbacks are consumed immediately; keep the original band counts in one capture.
+    const struct {
+      int books;
+      int menu;
+    } bands{bookCount, menuCount};
+    buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Left}, [&cycleBand, &bands] {
+      cycleBand(bands.books, bands.menu - bands.books, -1);
     });
-    buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Right}, [&cycleBand, bookCount, menuCount] {
-      cycleBand(bookCount, menuCount - bookCount, +1);
+    buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Right}, [&cycleBand, &bands] {
+      cycleBand(bands.books, bands.menu - bands.books, +1);
     });
     return;
   }

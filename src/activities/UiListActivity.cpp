@@ -94,20 +94,28 @@ void UiListActivity::loop() {
 }
 
 void UiListActivity::navigateButtons() {
-  const int count = listCount();
-  auto& n = activeNav();
-  buttonNavigator.onNextRelease([this, count, &n] { moveSelectionTo(ButtonNavigator::nextIndex(n.selected, count)); });
+  // Callbacks run synchronously. Share the original snapshot without a third capture.
+  const struct {
+    int count;
+    fui::ListNav& nav;
+  } snapshot{listCount(), activeNav()};
+  buttonNavigator.onNextRelease(
+      [this, &snapshot] { moveSelectionTo(ButtonNavigator::nextIndex(snapshot.nav.selected, snapshot.count)); });
   buttonNavigator.onPreviousRelease(
-      [this, count, &n] { moveSelectionTo(ButtonNavigator::previousIndex(n.selected, count)); });
+      [this, &snapshot] { moveSelectionTo(ButtonNavigator::previousIndex(snapshot.nav.selected, snapshot.count)); });
   // Page by the rows the last build actually drew (pageRows), not the
   // fixed-height visibleRows estimate: with wrapped labels the estimate
   // overshoots and rows between pages would never be shown. The measurement
   // can be one build old while a refresh is in flight; the next layout's
   // feedback corrects the viewport.
-  buttonNavigator.onNextContinuous(
-      [this, count, &n] { moveSelectionTo(ButtonNavigator::nextPageIndex(n.selected, count, n.inputPageRows())); });
-  buttonNavigator.onPreviousContinuous(
-      [this, count, &n] { moveSelectionTo(ButtonNavigator::previousPageIndex(n.selected, count, n.inputPageRows())); });
+  buttonNavigator.onNextContinuous([this, &snapshot] {
+    moveSelectionTo(
+        ButtonNavigator::nextPageIndex(snapshot.nav.selected, snapshot.count, snapshot.nav.inputPageRows()));
+  });
+  buttonNavigator.onPreviousContinuous([this, &snapshot] {
+    moveSelectionTo(
+        ButtonNavigator::previousPageIndex(snapshot.nav.selected, snapshot.count, snapshot.nav.inputPageRows()));
+  });
 }
 
 void UiListActivity::syncListViewport(UiScreen& screen, fui::ListProps& props, const int selectionOffset) {
