@@ -1,0 +1,205 @@
+#include <gtest/gtest.h>
+#include <algorithm>
+#include <cctype>
+#include <cstdio>
+#include <cstring>
+#include <map>
+#include <string>
+#include <vector>
+#define LOG_DBG(...) ((void)0)
+#define LOG_ERR(...) ((void)0)
+void resetTaskWatchdogIfSubscribed() {}
+class String : public std::string {
+ public:
+  using std::string::string;
+  String(const std::string& s) : std::string(s) {}
+  void replace(char a, char b) { std::replace(begin(), end(), a, b); }
+};
+struct HalFile {
+  bool opened = false;
+  std::string path;
+  bool isOpen() const { return opened; }
+  explicit operator bool() const { return opened; }
+  void close() { opened = false; }
+  size_t write(const uint8_t* p, size_t n);
+};
+struct StorageAdapter {
+  std::map<std::string, std::vector<uint8_t>> files;
+  std::vector<std::string> mutations;
+  std::vector<size_t> limits, requests;
+  bool removeFails = false;
+  bool exists(const char* p) const { return files.contains(p); }
+  bool mkdir(const char* p) { mutations.emplace_back(std::string("mkdir:") + p); files[p] = {}; return true; }
+  bool openFileForWrite(const char*, const char* p, HalFile& f) {
+    mutations.emplace_back(std::string("truncate:") + p);
+    files[p].clear(); // Production SDCardManager opens with O_TRUNC.
+    f = {true, p}; return true;
+  }
+  bool remove(const char* p) {
+    mutations.emplace_back(std::string("remove:") + p);
+    if (removeFails) return false;
+    files.erase(p); return true;
+  }
+} Storage;
+size_t HalFile::write(const uint8_t* p, size_t n) {
+  const auto call = Storage.requests.size();
+  Storage.requests.push_back(n);
+  const auto actual = opened ? std::min(n, call < Storage.limits.size() ? Storage.limits[call] : n) : 0;
+  auto& contents = Storage.files[path];
+  contents.insert(contents.end(), p, p + actual);
+  return actual;
+}
+struct SdCardFontRegistry {
+  static inline const char* existingRoot = nullptr;
+  static const char* findFamilyRoot(const char*) { return existingRoot; }
+  static const char* defaultWriteRoot() { return "/.fonts"; }
+};
+class FontInstaller {
+ public:
+  explicit FontInstaller(int&) {}
+  static bool isValidFamilyName(const char*);
+  static bool isValidCpfontFilename(const char*);
+  bool ensureFamilyDir(const char*);
+  static void buildFontPath(const char*, const char*, char*, size_t);
+};
+@FONT_VALIDATE@
+@FONT_PATH@
+enum { UPLOAD_FILE_START, UPLOAD_FILE_WRITE, UPLOAD_FILE_END, UPLOAD_FILE_ABORTED };
+struct HTTPUpload { int status = UPLOAD_FILE_START; String filename = "Regular.cpfont"; uint8_t* buf = nullptr; size_t currentSize = 0; };
+struct WebServer {
+  HTTPUpload incoming;
+  String family = "Pretendard";
+  int status = 0;
+  std::string response;
+  HTTPUpload& upload() { return incoming; }
+  String arg(const char*) const { return family; }
+  void send(int code, const char*, const char* body) { status = code; response = body; }
+};
+struct FontSystem {
+  int record = 0;
+  bool dirty = false;
+  int& registry() { return record; }
+  void markRegistryDirty() { dirty = true; }
+} sdFontSystem;
+class CrossPointWebServer {
+ public:
+  WebServer backing;
+  WebServer* server = &backing;
+  bool dropUploadIfCancelled() { return false; }
+  void handleFontUploadData();
+  void handleFontUpload();
+@FONT_STATE@
+};
+@FONT_HANDLERS@
+class FontUpload : public testing::Test {
+ protected:
+  CrossPointWebServer web;
+  const std::string path = "/.fonts/Pretendard/Regular.cpfont";
+  void SetUp() override { Storage = {}; sdFontSystem = {}; SdCardFontRegistry::existingRoot = nullptr; }
+  void event(int status) { web.backing.incoming.status = status; web.handleFontUploadData(); }
+  std::vector<uint8_t> data(size_t n) {
+    std::vector<uint8_t> bytes(n, 'A');
+    if (n >= 8) std::memcpy(bytes.data(), "CPFONT\0\0", 8);
+    return bytes;
+  }
+  void chunk(std::vector<uint8_t>& bytes) {
+    web.backing.incoming.buf = bytes.data(); web.backing.incoming.currentSize = bytes.size(); event(UPLOAD_FILE_WRITE);
+  }
+  void end() { event(UPLOAD_FILE_END); web.handleFontUpload(); }
+  void failed() {
+    EXPECT_FALSE(web.fontUpload.valid);
+    EXPECT_FALSE(web.fontUpload.file.isOpen());
+    EXPECT_EQ(web.backing.status, 400);
+    EXPECT_EQ(web.backing.response, "{\"error\":\"Invalid .cpfont file\"}");
+    EXPECT_FALSE(sdFontSystem.dirty);
+    EXPECT_FALSE(Storage.files.contains(path));
+  }
+};
+TEST_F(FontUpload, CompleteUploadPreservesBytesAndSuccessResult) {
+  event(UPLOAD_FILE_START); auto bytes = data(4096 + 17); chunk(bytes); end();
+  EXPECT_EQ(Storage.files[path], bytes);
+  EXPECT_EQ(web.fontUpload.bytesWritten, bytes.size());
+  EXPECT_EQ(Storage.requests, (std::vector<size_t>{4096, 17}));
+  EXPECT_EQ(web.backing.status, 200);
+  EXPECT_EQ(web.backing.response, "{\"ok\":true}");
+  EXPECT_TRUE(sdFontSystem.dirty);
+  EXPECT_FALSE(web.fontUpload.file.isOpen());
+}
+TEST_F(FontUpload, IntermediateShortWriteStopsCurrentAndSubsequentChunks) {
+  Storage.limits = {4096, 13}; event(UPLOAD_FILE_START);
+  auto bytes = data(4096 * 3 + 17); chunk(bytes);
+  EXPECT_FALSE(web.fontUpload.valid);
+  EXPECT_EQ(web.fontUpload.bytesWritten, 4096 + 13u);
+  EXPECT_EQ(Storage.files[path].size(), 4096 + 13u);
+  EXPECT_EQ(Storage.requests.size(), 2u);
+  chunk(bytes); EXPECT_EQ(Storage.requests.size(), 2u);
+  end(); failed();
+}
+TEST_F(FontUpload, ZeroWriteFailsWithoutClaimingBytes) {
+  Storage.limits = {0}; event(UPLOAD_FILE_START); auto bytes = data(4096); chunk(bytes);
+  EXPECT_EQ(web.fontUpload.bytesWritten, 0u); end(); failed();
+}
+TEST_F(FontUpload, FinalBufferedShortWriteFailsAndAccountsActualBytes) {
+  Storage.limits = {4096, 5}; event(UPLOAD_FILE_START); auto bytes = data(4096 + 17); chunk(bytes); end();
+  EXPECT_EQ(web.fontUpload.bytesWritten, 4096 + 5u);
+  EXPECT_EQ(Storage.requests, (std::vector<size_t>{4096, 17})); failed();
+}
+TEST_F(FontUpload, FinalBufferedZeroWriteFails) {
+  Storage.limits = {0}; event(UPLOAD_FILE_START); auto bytes = data(17); chunk(bytes); end();
+  EXPECT_EQ(web.fontUpload.bytesWritten, 0u); failed();
+}
+TEST_F(FontUpload, FailedReplacementCannotRestoreAlreadyTruncatedExistingFont) {
+  Storage.files[path] = data(123); event(UPLOAD_FILE_START);
+  ASSERT_TRUE(Storage.files[path].empty());
+  Storage.limits = {1}; auto bytes = data(17); chunk(bytes); end(); failed();
+  EXPECT_EQ(Storage.mutations.back(), "remove:" + path);
+}
+TEST_F(FontUpload, AbortedShortWriteClosesAndRemovesDestination) {
+  Storage.limits = {1}; event(UPLOAD_FILE_START); auto bytes = data(4096); chunk(bytes);
+  event(UPLOAD_FILE_ABORTED); web.handleFontUpload(); failed();
+}
+TEST_F(FontUpload, CleanupFailureStillReportsFailureButCanLeavePartialFile) {
+  Storage.limits = {5}; Storage.removeFails = true;
+  event(UPLOAD_FILE_START); auto bytes = data(17); chunk(bytes); end();
+  EXPECT_FALSE(web.fontUpload.valid); EXPECT_FALSE(web.fontUpload.file.isOpen());
+  EXPECT_EQ(web.backing.status, 400); EXPECT_FALSE(sdFontSystem.dirty);
+  EXPECT_EQ(Storage.files[path].size(), 5u); EXPECT_EQ(web.fontUpload.bytesWritten, 5u);
+  EXPECT_EQ(Storage.mutations.back(), "remove:" + path);
+}
+TEST_F(FontUpload, NextUploadResetsFailureAndAccounting) {
+  Storage.limits = {0}; event(UPLOAD_FILE_START); auto bytes = data(4096); chunk(bytes); end(); failed();
+  Storage.limits.clear(); Storage.requests.clear(); event(UPLOAD_FILE_START); chunk(bytes); end();
+  EXPECT_EQ(Storage.files[path], bytes); EXPECT_EQ(web.fontUpload.bytesWritten, bytes.size());
+  EXPECT_EQ(web.backing.status, 200);
+}
+TEST_F(FontUpload, InvalidMagicRetainsExistingFailureContract) {
+  event(UPLOAD_FILE_START); auto bytes = data(17); bytes[0] = 'X'; chunk(bytes); end(); failed();
+  EXPECT_TRUE(Storage.requests.empty());
+}
+TEST_F(FontUpload, FilenameTraversalCannotRedirectWriteOrCleanupToCredentials) {
+  const std::string protectedPath = "/.crosspoint/settings.json";
+  const std::vector<uint8_t> secret = {'s', 'e', 'c', 'r', 'e', 't'};
+  for (const char* bad : {"../settings.cpfont", "../../.crosspoint/settings.json", "/.crosspoint/settings.json",
+                          "..\\.crosspoint\\settings.json", "nested/Regular.cpfont", "nested\\Regular.cpfont",
+                          ".", "..", "", "settings.json"}) {
+    Storage = {}; Storage.files[protectedPath] = secret; web.backing.incoming.filename = bad;
+    event(UPLOAD_FILE_START); end(); event(UPLOAD_FILE_ABORTED);
+    EXPECT_EQ(web.backing.status, 400) << bad;
+    EXPECT_TRUE(web.fontUpload.filePath.empty()) << bad;
+    EXPECT_TRUE(Storage.mutations.empty()) << bad;
+    EXPECT_EQ(Storage.files[protectedPath], secret) << bad;
+  }
+}
+TEST_F(FontUpload, FamilyTraversalCannotRedirectWriteOrCleanupToCredentials) {
+  for (const char* bad : {"../.crosspoint", "/.crosspoint", "..\\.crosspoint", "nested/family", ".", "..", ""}) {
+    Storage = {}; web.backing.family = bad; event(UPLOAD_FILE_START); end(); event(UPLOAD_FILE_ABORTED);
+    EXPECT_EQ(web.backing.status, 400); EXPECT_TRUE(web.fontUpload.filePath.empty()); EXPECT_TRUE(Storage.mutations.empty());
+  }
+}
+TEST_F(FontUpload, ExistingVisibleRootAndSpaceNormalizationRemainUnchanged) {
+  SdCardFontRegistry::existingRoot = "/fonts";
+  web.backing.incoming.filename = "Regular Bold.cpfont";
+  event(UPLOAD_FILE_START); auto bytes = data(17); chunk(bytes); end();
+  EXPECT_EQ(Storage.files["/fonts/Pretendard/Regular_Bold.cpfont"], bytes);
+  EXPECT_EQ(web.backing.status, 200);
+}

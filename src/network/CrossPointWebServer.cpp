@@ -1965,8 +1965,13 @@ void CrossPointWebServer::handleFontUploadData() {
         remaining -= chunk;
 
         if (fontUpload.bufferPos >= FontUploadState::BUFFER_SIZE) {
-          fontUpload.file.write(fontUpload.buffer.data(), fontUpload.bufferPos);
-          fontUpload.bytesWritten += fontUpload.bufferPos;
+          const size_t written = fontUpload.file.write(fontUpload.buffer.data(), fontUpload.bufferPos);
+          fontUpload.bytesWritten += written;
+          if (written != fontUpload.bufferPos) {
+            LOG_ERR("WEB", "Font upload write failed: %s", fontUpload.filePath.c_str());
+            fontUpload.valid = false;
+            break;
+          }
           fontUpload.bufferPos = 0;
           resetTaskWatchdogIfSubscribed();
         }
@@ -1977,8 +1982,12 @@ void CrossPointWebServer::handleFontUploadData() {
     case UPLOAD_FILE_END: {
       // Flush remaining buffer
       if (fontUpload.valid && fontUpload.bufferPos > 0) {
-        fontUpload.file.write(fontUpload.buffer.data(), fontUpload.bufferPos);
-        fontUpload.bytesWritten += fontUpload.bufferPos;
+        const size_t written = fontUpload.file.write(fontUpload.buffer.data(), fontUpload.bufferPos);
+        fontUpload.bytesWritten += written;
+        if (written != fontUpload.bufferPos) {
+          LOG_ERR("WEB", "Font upload write failed: %s", fontUpload.filePath.c_str());
+          fontUpload.valid = false;
+        }
         fontUpload.bufferPos = 0;
       }
       if (fontUpload.file.isOpen()) {
