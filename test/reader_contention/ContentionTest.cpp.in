@@ -1,0 +1,131 @@
+#include <gtest/gtest.h>
+#include <atomic>
+#include <cassert>
+#include <memory>
+#include <mutex>
+#include <thread>
+
+constexpr int pdTRUE = 1, portMAX_DELAY = -1;
+std::mutex renderMutex;
+thread_local bool ownsRenderMutex = false;
+int xSemaphoreTake(std::mutex*, int wait) {
+  if (wait == 0 && !renderMutex.try_lock()) return 0;
+  if (wait != 0) renderMutex.lock();
+  ownsRenderMutex = true;
+  return pdTRUE;
+}
+void xSemaphoreGive(std::mutex*) { ownsRenderMutex = false; renderMutex.unlock(); }
+class Activity {};
+struct Manager {
+  std::mutex* renderingMutex = &renderMutex;
+  int queries = 0;
+  bool skipLoopDelay() { EXPECT_TRUE(ownsRenderMutex); ++queries; return true; }
+} activityManager;
+@LOCK_HEADER@
+@LOCK_SOURCE@
+
+struct Section {
+  bool building = true, partial = false, succeed = true;
+  int pageCount = 0, currentPage = 0;
+  bool isBuilding() const { EXPECT_TRUE(ownsRenderMutex); return building; }
+  bool isPartial() const { EXPECT_TRUE(ownsRenderMutex); return partial; }
+  bool buildSomeMore(int) { EXPECT_TRUE(ownsRenderMutex); ++pageCount; return succeed; }
+  bool isBuildComplete() const { return !building; }
+};
+#define LOG_ERR(...) ((void)0)
+class EpubReaderActivity {
+ public:
+  std::unique_ptr<Section> section;
+  bool buildHeapPaused = false, heapAllowed = true;
+  int updates = 0;
+  static constexpr int BUILD_WINDOW_AHEAD = 3, BACKGROUND_BUILD_PAGES_PER_TICK = 2;
+  bool backgroundBuildWanted() const;
+  bool skipLoopDelay();
+  bool buildTickHeapGate() { return heapAllowed; }
+  bool applyDeferredReposition() { return false; }
+  void requestUpdate() { ++updates; }
+  void tick() {
+@BUILD_TICK@
+  }
+};
+@BUILD_HINT@
+int lastDelay = 0;
+void delay(int ms) { lastDelay = ms; }
+bool observedHint = false;
+void pollHint() {
+@MAIN_HINT@
+  observedHint = skipLoopDelay;
+}
+
+TEST(ReaderContention, TryDoesNotWaitOrReadBusySection) {
+  EpubReaderActivity reader;
+  reader.section = std::make_unique<Section>();
+  std::atomic<bool> ready{false}, done{false};
+  std::thread rendering([&] {
+    RenderLock lock;
+    ready = true;
+    while (!done.load()) std::this_thread::yield();
+  });
+  while (!ready.load()) std::this_thread::yield();
+  reader.tick();
+  const auto queries = activityManager.queries;
+  pollHint();
+  EXPECT_EQ(activityManager.queries, queries);
+  EXPECT_EQ(lastDelay, 10);
+  done = true;
+  rendering.join();
+  reader.tick();
+  EXPECT_EQ(reader.section->pageCount, 1);
+  pollHint();
+  EXPECT_TRUE(observedHint);
+}
+
+TEST(ReaderContention, HeapPauseAndFailedBuildCleanUpUnderLock) {
+  EpubReaderActivity reader;
+  reader.section = std::make_unique<Section>();
+  reader.heapAllowed = false;
+  reader.tick();
+  EXPECT_EQ(reader.section->pageCount, 0);
+  reader.heapAllowed = true;
+  reader.section->succeed = false;
+  reader.tick();
+  EXPECT_FALSE(reader.section);
+  EXPECT_EQ(reader.updates, 1);
+  RenderLock lock;
+  EXPECT_FALSE(reader.skipLoopDelay());
+}
+
+TEST(ReaderContention, ConcurrentReplacementAndRapidBuildHintsStayProtected) {
+  EpubReaderActivity reader;
+  std::thread rendering([&] {
+    for (int i = 0; i < 1000; ++i) {
+      RenderLock lock;
+      reader.section = std::make_unique<Section>();
+      if (i % 3 == 0) reader.section.reset();
+    }
+  });
+  for (int i = 0; i < 1000; ++i) {
+    reader.tick();
+    RenderLock lock(RenderLock::Mode::Try);
+    if (lock.ownsLock()) reader.skipLoopDelay();
+  }
+  rendering.join();
+  RenderLock lock;
+  reader.section.reset();
+  EXPECT_FALSE(reader.skipLoopDelay());
+}
+
+TEST(ReaderContention, ExplicitUnlockAndCompatibilityConstructorReleaseExactlyOnce) {
+  Activity activity;
+  {
+    RenderLock lock(activity);
+    EXPECT_TRUE(lock.ownsLock());
+    lock.unlock();
+    EXPECT_FALSE(lock.ownsLock());
+    lock.unlock();
+    RenderLock next(RenderLock::Mode::Try);
+    EXPECT_TRUE(next.ownsLock());
+  }
+  RenderLock next(RenderLock::Mode::Try);
+  EXPECT_TRUE(next.ownsLock());
+}
