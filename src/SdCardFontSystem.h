@@ -49,7 +49,9 @@ class SdCardFontSystem {
 
   /// Mark the registry as needing re-discovery.
   /// Thread-safe: can be called from the web server task.
-  void markRegistryDirty() { registryDirty_.store(true, std::memory_order_release); }
+  void markRegistryDirty() {
+    registryDirty_.store(true, std::memory_order_release);
+  }
 
   /// If the registry is dirty, re-scan the SD card now and clear the flag.
   /// Used by the web UI so uploaded/deleted fonts appear in the list
@@ -61,26 +63,14 @@ class SdCardFontSystem {
   }
 
  private:
-  // Load the active SD family at the built-in UI point sizes and register each
-  // as a size-matched script fallback for the corresponding UI font, so book
-  // titles/list rows in scripts the built-ins lack (CJK, Greek, Cyrillic, ...)
-  // render at the same size as the surrounding Latin UI text. No-op when no SD
-  // family is loaded. Safe to call repeatedly (sizes already loaded are
-  // reused).
-  void setupUiFallbacks(GfxRenderer& renderer);
-
 #if CROSSPOINT_VECTOR_FONTS
   // --- Vector (.ttf/.otf) font path (FreeInkFont via TtfEpdFont) -------------
   // Load/refresh the selected TTF family at the current reader size, register
   // it with the renderer, and track it so ensureSdCardFontReady() rebuilds its
   // glyph set per page. registryWasDirty forces a reload even if unchanged.
   void loadTtfFamily(const SdCardFontFamilyInfo& family, GfxRenderer& renderer, bool registryWasDirty);
-  // Unregister + free the active TTF font (and its UI-size fallbacks), if any.
+  // Unregister + free the active reader TTF font, if any.
   void unloadTtf(GfxRenderer& renderer);
-  // Register the loaded TTF at each built-in UI size as a script fallback, so UI
-  // text (book titles, list rows, menus, status bar) in scripts the built-in
-  // fonts lack renders in the chosen TTF. Mirrors setupUiFallbacks for .cpfont.
-  void setupTtfUiFallbacks(GfxRenderer& renderer);
   // Open one style source file (resident if small, streamed if large) into
   // ttfSources_[style]. Returns false on open/read failure.
   bool openTtfSource(uint8_t style, const std::string& path);
@@ -93,7 +83,8 @@ class SdCardFontSystem {
 #endif  // CROSSPOINT_VECTOR_FONTS
 
   SdCardFontRegistry registry_;
-  SdCardFontManager manager_;
+  SdCardFontManager manager_;  // selected reader family
+  GfxRenderer* renderer_ = nullptr;
   std::atomic<bool> registryDirty_{false};
 
 #if CROSSPOINT_VECTOR_FONTS
@@ -117,9 +108,6 @@ class SdCardFontSystem {
   std::string ttfFamily_;     // loaded vector family name ("" = none)
   int ttfFontId_ = 0;         // renderer font id for ttf_ (0 = none)
   uint8_t ttfPointSize_ = 0;  // size ttf_ was built at
-  // UI-size TTF fallbacks (share ttfSources_); parallel to their renderer font ids.
-  std::vector<std::unique_ptr<TtfEpdFont>> ttfUi_;
-  std::vector<int> ttfUiIds_;
 #endif  // CROSSPOINT_VECTOR_FONTS
 };
 

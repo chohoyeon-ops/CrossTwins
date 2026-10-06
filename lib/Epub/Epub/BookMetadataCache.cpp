@@ -258,9 +258,8 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
   // NOTE: We intentionally skip calling loadAllFileStatSlims() here.
   // For large EPUBs (2000+ chapters), pre-loading all ZIP central directory entries
   // into memory causes OOM crashes on ESP32-C3's limited ~380KB RAM.
-  // Instead, for large books we use a one-pass batch lookup that scans the ZIP
-  // central directory once and matches against spine targets using hash comparison.
-  // This is O(n*log(m)) instead of O(n*m) while avoiding memory exhaustion.
+  // Scan the ZIP central directory once per bounded target chunk. The output
+  // sizes remain indexed by original spine order; only lookup targets are sorted.
   // See: https://github.com/crosspoint-reader/crosspoint-reader/issues/134
 
   std::deque<uint32_t> spineSizes;
@@ -270,7 +269,8 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
     LOG_DBG("BMC", "Using batch size lookup for %d spine items", spineCount);
 
     std::deque<ZipFile::SizeTarget> targets;
-    targets.resize(spineCount);
+    spineSizes.resize(spineCount, 0);
+    int matched = 0;
 
     spineIn.seek(0);
     for (int i = 0; i < spineCount; i++) {
@@ -281,15 +281,16 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
       t.hash = ZipFile::fnvHash64(path.c_str(), path.size());
       t.len = static_cast<uint16_t>(path.size());
       t.index = static_cast<uint16_t>(i);
-      targets[i] = t;
+      targets.push_back(t);
+      // SizeTarget is 16 B on C3; bound this temporary payload to 32 KiB.
+      if (targets.size() < 2048 && i + 1 < spineCount) continue;
+
+      std::sort(targets.begin(), targets.end(), [](const ZipFile::SizeTarget& a, const ZipFile::SizeTarget& b) {
+        return a.hash < b.hash || (a.hash == b.hash && a.len < b.len);
+      });
+      matched += zip.fillUncompressedSizes(targets, spineSizes);
+      targets.clear();
     }
-
-    std::sort(targets.begin(), targets.end(), [](const ZipFile::SizeTarget& a, const ZipFile::SizeTarget& b) {
-      return a.hash < b.hash || (a.hash == b.hash && a.len < b.len);
-    });
-
-    spineSizes.resize(spineCount, 0);
-    int matched = zip.fillUncompressedSizes(targets, spineSizes);
     LOG_DBG("BMC", "Batch lookup matched %d/%d spine items", matched, spineCount);
 
     targets.clear();

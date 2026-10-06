@@ -1,6 +1,7 @@
 """
 PlatformIO pre-build script: inject git branch and short SHA into
-CROSSPOINT_VERSION for development environments.
+CROSSPOINT_VERSION for development environments, plus a stable display label
+for the Settings and About UI.
 
 Results in a version string like:  1.1.0-dev-feat-kosync-xpath-05c6cf8
 Release environments are unaffected; they set CROSSPOINT_VERSION in the ini.
@@ -87,8 +88,12 @@ def inject_version(env):
     branch = get_git_branch(project_dir)
     short_sha = get_git_short_sha(project_dir)
     version_string = f'{base_version}-dev-{branch}-{short_sha}'
+    display_version_string = f'CrossTwins-{base_version}-dev'
 
-    env.Append(CPPDEFINES=[('CROSSPOINT_VERSION', f'\\"{version_string}\\"')])
+    env.Append(CPPDEFINES=[
+        ('CROSSPOINT_VERSION', f'\\"{version_string}\\"'),
+        ('USER_VISIBLE_FIRMWARE_VERSION', f'\\"{display_version_string}\\"'),
+    ])
     print(f'CrossPoint build version: {version_string}')
 
 

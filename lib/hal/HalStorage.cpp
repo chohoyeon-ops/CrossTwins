@@ -8,6 +8,7 @@
 #endif
 
 #include <cassert>
+#include <new>
 
 #define SDCard SDCardManager::getInstance()
 
@@ -190,6 +191,19 @@ bool HalStorage::openFileForRead(const char* moduleName, const char* path, HalFi
   bool ok = SDCard.openFileForRead(moduleName, path, fsFile);
   file = HalFile(std::make_unique<HalFile::Impl>(std::move(fsFile)));
   return ok;
+}
+
+HalStorage::ReadOpenResult HalStorage::openFileForReadChecked(const char* moduleName, const char* path, HalFile& file) {
+  static_assert(sizeof(HalFile::Impl) <= READ_HANDLE_ALLOCATION_LIMIT, "Read handle exceeds bounded allocation");
+  StorageLock lock;
+  auto handle = std::unique_ptr<HalFile::Impl>(new (std::nothrow) HalFile::Impl(FsFile{}));
+  if (!handle) {
+    LOG_ERR(moduleName, "Failed to allocate read handle (%zu bytes)", sizeof(HalFile::Impl));
+    return ReadOpenResult::ResourceFailure;
+  }
+  if (!SDCard.openFileForRead(moduleName, path, handle->file)) return ReadOpenResult::IoFailure;
+  file = HalFile(std::move(handle));
+  return ReadOpenResult::Ok;
 }
 
 bool HalStorage::openFileForRead(const char* moduleName, const std::string& path, HalFile& file) {

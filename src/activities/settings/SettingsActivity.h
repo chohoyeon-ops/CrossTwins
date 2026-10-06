@@ -29,6 +29,7 @@ enum class SettingAction {
   KeyboardLayouts,
   HomeButton,
   About,
+  SlideshowInterval,
 };
 
 struct SettingInfo {
@@ -220,6 +221,7 @@ class SettingsActivity final : public UiTabListActivity {
   void enterCategory(int categoryIndex);
   void toggleCurrentSetting();
   void openSleepTimeoutPicker();
+  void openSlideshowIntervalPicker();
   void rebuildSettingsLists();
   void syncQuickResumeTimeoutForSleepScreen(bool sleepScreenChanged, bool quickResumeTimeoutChanged);
 

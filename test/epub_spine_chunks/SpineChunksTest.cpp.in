@@ -1,0 +1,122 @@
+#include <gtest/gtest.h>
+#include <algorithm>
+#include <cstdint>
+#include <cstring>
+#include <deque>
+#include <string>
+#include <string_view>
+#include <vector>
+
+template <typename... Args> void testLog(const Args&...) {}
+#define LOG_DBG(...) testLog(__VA_ARGS__)
+namespace FsHelpers {
+@NORMALISE@
+}
+class MemoryFile {
+ public:
+  std::vector<uint8_t> bytes;
+  size_t pos = 0;
+  void seek(size_t p) { pos = p; }
+  void seekCur(size_t n) { pos += n; }
+  bool available() { return pos < bytes.size(); }
+  int read(void* dst, size_t n) {
+    n = std::min(n, pos < bytes.size() ? bytes.size() - pos : 0);
+    if (n) std::memcpy(dst, bytes.data() + pos, n);
+    pos += n;
+    return static_cast<int>(n);
+  }
+};
+class ZipFile {
+ public:
+@TARGET@
+  struct { size_t centralDirOffset = 0; } zipDetails;
+  MemoryFile file;
+  bool valid = true;
+  size_t calls = 0, maxTargets = 0;
+  bool loadZipDetails() { return valid; }
+  int fillImpl(std::deque<SizeTarget>&, std::deque<uint32_t>&);
+  int fillUncompressedSizes(std::deque<SizeTarget>& targets, std::deque<uint32_t>& sizes) {
+    ++calls;
+    maxTargets = std::max(maxTargets, targets.size());
+    return fillImpl(targets, sizes);
+  }
+  void entry(const std::string& name, uint32_t size) {
+    auto start = file.bytes.size();
+    file.bytes.resize(start + 46, 0);
+    auto put = [&](size_t offset, uint32_t value, size_t n) {
+      for (size_t i = 0; i < n; ++i) file.bytes[start + offset + i] = static_cast<uint8_t>(value >> (i * 8));
+    };
+    put(0, 0x02014b50, 4);
+    put(20, size, 4); put(24, size, 4); put(28, name.size(), 2);
+    file.bytes.insert(file.bytes.end(), name.begin(), name.end());
+  }
+};
+struct ScopedOpenClose { explicit ScopedOpenClose(ZipFile&) {} explicit operator bool() const { return true; } };
+@FILL@
+struct SpineEntry { std::string href; };
+struct SpineInput {
+  const std::vector<SpineEntry>& entries;
+  size_t pos = 0;
+  void seek(int) { pos = 0; }
+};
+SpineEntry readSpineEntryFrom(SpineInput& in) { return in.entries.at(in.pos++); }
+class BookMetadataCache {
+ public:
+  static constexpr int LARGE_SPINE_THRESHOLD = 400;
+  std::deque<uint32_t> spineSizes;
+  bool useBatchSizes = false;
+  void run(const std::vector<SpineEntry>& entries, ZipFile& zip) {
+    const int spineCount = static_cast<int>(entries.size());
+    SpineInput spineIn{entries};
+@CHUNKS@
+  }
+};
+static_assert(sizeof(ZipFile::SizeTarget) == 16);
+
+TEST(EpubSpineChunks, SmallSpinesRetainExistingNonBatchPath) {
+  ZipFile zip;
+  BookMetadataCache cache;
+  cache.run(std::vector<SpineEntry>(3, {"chapter.xhtml"}), zip);
+  EXPECT_FALSE(cache.useBatchSizes);
+  EXPECT_EQ(zip.calls, 0u);
+}
+TEST(EpubSpineChunks, ThresholdAndChunkBoundariesPreserveEveryOriginalIndex) {
+  for (int count : {400, 2047, 2048, 2049, 4096, 4097, 10000}) {
+    std::vector<SpineEntry> entries;
+    ZipFile zip;
+    for (int i = 0; i < count; ++i) entries.push_back({"OPS/한글/장" + std::to_string(i) + ".xhtml"});
+    // ZIP order is intentionally the reverse of spine/navigation order.
+    for (int i = count - 1; i >= 0; --i) zip.entry(entries[i].href, i + 10);
+    BookMetadataCache cache;
+    cache.run(entries, zip);
+    ASSERT_EQ(cache.spineSizes.size(), static_cast<size_t>(count));
+    for (int i = 0; i < count; ++i) EXPECT_EQ(cache.spineSizes[i], i + 10u);
+    EXPECT_EQ(zip.calls, static_cast<size_t>((count + 2047) / 2048));
+    EXPECT_EQ(zip.maxTargets, static_cast<size_t>(std::min(count, 2048)));
+    EXPECT_LE(zip.maxTargets * sizeof(ZipFile::SizeTarget), 32768u);
+  }
+}
+TEST(EpubSpineChunks, RepeatedHrefsAcrossChunksAndNormalisedKoreanPathsRemainComplete) {
+  std::vector<SpineEntry> entries(4097, {"OPS/unused/../한글.xhtml"});
+  ZipFile zip;
+  zip.entry("OPS/한글.xhtml", 777);
+  BookMetadataCache cache;
+  cache.run(entries, zip);
+  ASSERT_EQ(cache.spineSizes.size(), entries.size());
+  for (auto size : cache.spineSizes) EXPECT_EQ(size, 777u);
+}
+TEST(EpubSpineChunks, MissingEntriesAndInvalidDirectoryKeepZeroForExistingFallback) {
+  std::vector<SpineEntry> entries(2049, {"present.xhtml"});
+  entries[2048].href = "missing.xhtml";
+  ZipFile zip;
+  zip.entry("present.xhtml", 50);
+  BookMetadataCache cache;
+  cache.run(entries, zip);
+  EXPECT_EQ(cache.spineSizes.front(), 50u);
+  EXPECT_EQ(cache.spineSizes.back(), 0u);
+  ZipFile invalid;
+  invalid.valid = false;
+  BookMetadataCache failed;
+  failed.run(entries, invalid);
+  for (auto size : failed.spineSizes) EXPECT_EQ(size, 0u);
+}

@@ -5,41 +5,27 @@
 #include <string>
 #include <vector>
 
+#include "ReaderMenuCapabilities.h"
 #include "activities/UiListActivity.h"
 #include "components/OptionPopup.h"
 
 class EpubReaderMenuActivity final : public UiListActivity {
  public:
-  // Menu actions available from the reader menu.
-  enum class MenuAction {
-    SELECT_CHAPTER,
-    FOOTNOTES,
-    TEXT_SETTINGS,
-    NIGHT_MODE,
-    FRONTLIGHT,
-    GO_TO_PERCENT,
-    AUTO_PAGE_TURN,
-    ROTATE_SCREEN,
-    BOOKMARKS,
-    TOGGLE_BOOKMARK,
-    SCREENSHOT,
-    DISPLAY_QR,
-    GO_HOME,
-    SYNC,
-    DELETE_CACHE,
-    DICTIONARY
-  };
+  // Menu actions available from the shared format-filtered reader menu.
+  using MenuAction = readermenu::Action;
 
   struct MenuItem {
     MenuAction action;
     StrId labelId;
   };
 
-  static void buildMenuItems(std::vector<MenuItem>& items, bool hasFootnotes, bool hasBookmarks);
+  static void buildMenuItems(std::vector<MenuItem>& items, bool hasFootnotes, bool hasBookmarks,
+                             readermenu::Profile profile = readermenu::Profile::Epub);
 
   explicit EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title,
                                   const int currentPage, const int totalPages, const int bookProgressPercent,
-                                  const uint8_t currentOrientation, const bool hasFootnotes, bool hasBookmarks);
+                                  const uint8_t currentOrientation, const bool hasFootnotes, bool hasBookmarks,
+                                  readermenu::Profile profile = readermenu::Profile::Epub);
 
   void render(RenderLock&&) override;
   bool handleHomeGesture() override;

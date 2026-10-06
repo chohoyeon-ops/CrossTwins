@@ -1,0 +1,66 @@
+#include <HalStorage.h>
+#include <Serialization.h>
+#include <gtest/gtest.h>
+#include <filesystem>
+#include <string>
+#define LOG_ERR(...) ((void)0)
+@SECTION_VERSIONS@
+struct ReaderRenderSpec {};
+struct Section {
+  std::string filePath;
+  HalFile file;
+  bool cleared = false, wasPartial = false;
+  void clearCache() { cleared = true; Storage.remove(filePath); }
+  bool loadSectionFile(const ReaderRenderSpec&);
+};
+// Unchanged production open/read/version-validation prefix. Other layout-header
+// fields and LUT loading are outside this focused compatibility test.
+@SECTION_GATE@
+    wasPartial = filePartial;
+    return true;
+  }
+}
+class SectionSoftFlush : public testing::Test {
+ protected:
+  Section section;
+  void SetUp() override {
+    section.filePath = (std::filesystem::temp_directory_path() / "crosspoint-soft-flush-section.bin").string();
+  }
+  void TearDown() override { section.file.close(); std::filesystem::remove(section.filePath); }
+  void write(uint8_t version) {
+    HalFile file;
+    ASSERT_TRUE(file.open(section.filePath.c_str(), "wb"));
+    serialization::writePod(file, version);
+  }
+};
+TEST_F(SectionSoftFlush, CurrentFinalizedVersionPassesProductionGate) {
+  EXPECT_EQ(SECTION_FILE_VERSION, 51);
+  write(SECTION_FILE_VERSION);
+  EXPECT_TRUE(section.loadSectionFile({}));
+  EXPECT_FALSE(section.cleared);
+  EXPECT_FALSE(section.wasPartial);
+}
+TEST_F(SectionSoftFlush, CurrentPartialVersionMovesInLockstep) {
+  EXPECT_EQ(SECTION_FILE_PARTIAL_VERSION, 231);
+  write(SECTION_FILE_PARTIAL_VERSION);
+  EXPECT_TRUE(section.loadSectionFile({}));
+  EXPECT_TRUE(section.wasPartial);
+}
+TEST_F(SectionSoftFlush, OldFinalizedAndPartialCachesAreClosedAndInvalidated) {
+  for (uint8_t old : {50, 232}) {
+    write(old);
+    EXPECT_FALSE(section.loadSectionFile({}));
+    EXPECT_FALSE(section.file.isOpen());
+    EXPECT_TRUE(section.cleared);
+    EXPECT_FALSE(std::filesystem::exists(section.filePath));
+    section.cleared = false;
+  }
+}
+TEST_F(SectionSoftFlush, InvalidatedCacheAcceptsRebuiltCurrentVersion) {
+  write(50);
+  ASSERT_FALSE(section.loadSectionFile({}));
+  section.cleared = false;
+  write(SECTION_FILE_VERSION);
+  EXPECT_TRUE(section.loadSectionFile({}));
+  EXPECT_FALSE(section.cleared);
+}

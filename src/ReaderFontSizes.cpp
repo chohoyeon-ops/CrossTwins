@@ -7,13 +7,13 @@ std::vector<uint8_t> readerFontPointSizes(const SdCardFontRegistry* registry, co
     if (const auto* family = registry->findFamily(sdFamilyName)) {
       // Vector (.ttf/.otf) fonts render at any size — offer the standard reader
       // sizes instead of the placeholder size-0 entry in the family record.
-      if (!family->vector) {
-        auto sizes = family->availableSizes();
-        if (!sizes.empty()) return sizes;
+      if (family->vector) {
+        return {std::begin(STANDARD_READER_POINT_SIZES), std::end(STANDARD_READER_POINT_SIZES)};
       }
+      return family->availableSizes();
     }
   }
-  return {std::begin(BUILTIN_READER_POINT_SIZES), std::end(BUILTIN_READER_POINT_SIZES)};
+  return {};
 }
 
 uint8_t snapToNearestPointSize(const uint8_t* sizes, const size_t count, const uint8_t pt) {

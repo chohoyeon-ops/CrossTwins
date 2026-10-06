@@ -4,6 +4,7 @@ import sys
 import re
 import math
 import argparse
+from pathlib import Path
 from collections import namedtuple
 
 # Force UTF-8 stdout so that `python fontconvert.py … > foo.h` on Windows
@@ -20,6 +21,7 @@ parser.add_argument("size", type=int, help="font size to use.")
 parser.add_argument("fontstack", action="store", nargs='+', help="list of font files, ordered by descending priority.")
 parser.add_argument("--2bit", dest="is2Bit", action="store_true", help="generate 2-bit greyscale bitmap instead of 1-bit black and white.")
 parser.add_argument("--additional-intervals", dest="additional_intervals", action="append", help="Additional code point intervals to export as min,max. This argument can be repeated.")
+parser.add_argument("--additional-charset-file", dest="additional_charset_file", help="UTF-8 file of required U+XXXX codepoints or U+XXXX-U+YYYY ranges to add to the default intervals.")
 parser.add_argument("--compress", dest="compress", action="store_true", help="Compress glyph bitmaps using DEFLATE with group-based compression.")
 parser.add_argument("--zopfli", dest="zopfli", action="store_true", help="Use Zopfli for the DEFLATE backend instead of zlib. Produces standard raw-DEFLATE streams (decoded unchanged by the on-device uzlib inflater), typically a few percent smaller than zlib -9, at the cost of much slower compression. Requires --compress and the 'zopfli' package.")
 parser.add_argument("--force-autohint", dest="force_autohint", action="store_true", help="Force FreeType auto-hinter instead of native font hinting. Improves stem width consistency for fonts with weak or no native TrueType hints.")
@@ -139,6 +141,24 @@ intervals = [
 add_ints = []
 if args.additional_intervals:
     add_ints = [tuple([int(n, base=0) for n in i.split(",")]) for i in args.additional_intervals]
+required_codepoints = set()
+if args.additional_charset_file:
+    charset_path = Path(args.additional_charset_file)
+    for line_number, raw_line in enumerate(charset_path.read_text(encoding="utf-8").splitlines(), 1):
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        match = re.fullmatch(r"U\+([0-9A-Fa-f]{4,6})(?:-U\+([0-9A-Fa-f]{4,6}))?", line)
+        if not match:
+            parser.error(f"{charset_path}:{line_number}: expected U+XXXX or U+XXXX-U+YYYY")
+        first = int(match.group(1), 16)
+        last = int(match.group(2), 16) if match.group(2) else first
+        if first > last or last > 0x10FFFF:
+            parser.error(f"{charset_path}:{line_number}: invalid codepoint range")
+        required_codepoints.update(range(first, last + 1))
+    if not required_codepoints:
+        parser.error(f"{charset_path}: character set is empty")
+    add_ints.extend((cp, cp) for cp in sorted(required_codepoints))
 
 def norm_floor(val):
     return int(math.floor(val / (1 << 6)))
@@ -268,6 +288,13 @@ def load_glyph(code_point):
             return face
         face_index += 1
     return None
+
+if required_codepoints:
+    missing_codepoints = [cp for cp in sorted(required_codepoints) if load_glyph(cp) is None]
+    if missing_codepoints:
+        preview = ", ".join(f"U+{cp:04X}" for cp in missing_codepoints[:32])
+        print(f"Error: required glyphs missing from font stack: {preview}", file=sys.stderr)
+        sys.exit(1)
 
 unmerged_intervals = sorted(intervals + add_ints)
 intervals = []

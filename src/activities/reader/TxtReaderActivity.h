@@ -2,47 +2,65 @@
 
 #include <Txt.h>
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "CrossPointSettings.h"
 #include "ReaderActivity.h"
+#include "TxtPageEstimate.h"
+#include "TxtPageReader.h"
+#include "TxtProgressFile.h"
 
 class TxtReaderActivity final : public ReaderActivity {
   std::unique_ptr<Txt> txt;
 
-  int currentPage = 0;
-  int totalPages = 1;
-
-  // Streaming text reader - stores file offsets for each page
-  std::vector<size_t> pageOffsets;
+  TxtPageHistory pageHistory;
+  TxtPageReader pageReader;
+  TxtPageEstimate pageEstimate;
+  TxtProgressFile progressFile;
+  size_t currentDisplayOrdinal = 1;
+  bool hasCurrentDisplayOrdinal = false;
+  TxtProgressState lastVisibleProgressState;
+  bool hasVisiblePageStart = false;
   std::vector<std::string> currentPageLines;
+  size_t currentPageEndOffset = 0;
+  bool currentPageLoaded = false;
+  bool pendingScreenshot = false;
+  bool pendingInitialIndexingPopup = false;
+  std::atomic<bool> endOfBookRequested{false};
   int linesPerPage = 0;
+  int viewportHeight = 0;
+  int lineAdvance = 1;
   int viewportWidth = 0;
-  bool initialized = false;
+  std::atomic<bool> initialized{false};
 
-  // Cached settings for cache validation
+  // Settings latched for this reader session
   int cachedFontId = 0;
+  uint8_t cachedLineSpacing = CrossPointSettings::NORMAL;
   uint8_t cachedScreenMargin = 0;
   uint8_t cachedParagraphAlignment = CrossPointSettings::LEFT_ALIGN;
+  uint8_t cachedOrientation = 0;
+  bool cachedHyphenationEnabled = false;
   int cachedOrientedMarginTop = 0;
   int cachedOrientedMarginRight = 0;
   int cachedOrientedMarginBottom = 0;
   int cachedOrientedMarginLeft = 0;
 
   void renderPage(GfxRenderer& renderer);
+  void persistVisibleCheckpoint();
   void initializeReader(GfxRenderer& renderer);
-  bool loadPageAtOffset(const GfxRenderer& renderer, size_t offset, std::vector<std::string>& outLines,
-                        size_t& nextOffset);
-  void buildPageIndex(GfxRenderer& renderer);
-  bool loadPageIndexCache();
-  void savePageIndexCache() const;
-  void saveProgress() const;
-  void loadProgress();
+  void updateLayoutIfChanged(GfxRenderer& renderer);
+  void updateViewport(GfxRenderer& renderer);
+  void openReaderOptions();
+  int estimatedTotalPages() const;
+  float estimatedProgressPercent() const;
   void renderStatusBar() const;
+  size_t estimatedCurrentPageNumber() const;
 
   bool loadBook() override;
+  bool handleFormatInput() override;
   std::string getBookTitle() const override { return txt ? txt->getTitle() : ""; }
   void renderBook() override;
 
@@ -52,8 +70,8 @@ class TxtReaderActivity final : public ReaderActivity {
       : ReaderActivity("TxtReader", renderer, mappedInput, std::move(bookPath), allowFastInitialRefresh) {}
   ~TxtReaderActivity() override = default;
 
+  void onExit() override;
   bool pageTurn(bool isForward) override;
-  bool skipPages(int amount) override;
   bool isAtEndOfBook() const override;
   void onReturnFromEndOfBook() override;
 

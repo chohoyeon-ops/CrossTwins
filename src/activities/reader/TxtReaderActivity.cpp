@@ -3,25 +3,26 @@
 #include <BidiUtils.h>
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
-#include <HalStorage.h>
 #include <I18n.h>
-#include <Memory.h>
-#include <Serialization.h>
-#include <Utf8.h>
+
+#include <algorithm>
+#include <climits>
+#include <cstdint>
+#include <iterator>
+#include <limits>
 
 #include "CrossPointSettings.h"
-#include "ProgressFile.h"
+#include "EpubReaderMenuActivity.h"
+#include "QrDisplayActivity.h"
 #include "ReaderActivity.h"
 #include "ReaderUtils.h"
+#include "SdCardFontSystem.h"
+#include "TxtLayoutInvalidation.h"
+#include "TxtPageMetrics.h"
+#include "activities/settings/TextSettingsActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
-
-namespace {
-constexpr size_t CHUNK_SIZE = 8 * 1024;  // 8KB chunk for reading
-// Cache file magic and version
-constexpr uint32_t CACHE_MAGIC = 0x54585449;  // "TXTI"
-constexpr uint8_t CACHE_VERSION = 3;          // Increment when cache format changes
-}  // namespace
+#include "util/ScreenshotUtil.h"
 
 bool TxtReaderActivity::loadBook() {
   txt = makeUniqueNoThrow<Txt>(bookPath, "/.crosspoint");
@@ -37,17 +38,146 @@ bool TxtReaderActivity::loadBook() {
   return true;
 }
 
+bool TxtReaderActivity::handleFormatInput() {
+  if (isAtEndOfBook()) return false;
+
+  if (mappedInput.homeButtonAction() != HomeButtonAction::ReaderMenu &&
+      !mappedInput.wasReleased(MappedInputManager::Button::Confirm) &&
+      !ReaderUtils::isTouchMenuGesture(renderer, mappedInput)) {
+    return false;
+  }
+
+  openReaderOptions();
+  return true;
+}
+
+void TxtReaderActivity::openReaderOptions() {
+  if (!initialized) {
+    RenderLock lock(*this);
+    if (!initialized) {
+      initializeReader(renderer);
+      pendingInitialIndexingPopup = initialized && txt && txt->getFileSize() > 0;
+    }
+  }
+
+  const int currentPage = static_cast<int>(std::min<size_t>(estimatedCurrentPageNumber(), INT_MAX));
+  const int progress = static_cast<int>(estimatedProgressPercent() + 0.5f);
+  startActivityForResult(
+      std::make_unique<EpubReaderMenuActivity>(renderer, mappedInput, getBookTitle(), currentPage,
+                                               estimatedTotalPages(), progress, SETTINGS.orientation, false, false,
+                                               readermenu::Profile::Txt),
+      [this](const ActivityResult& result) {
+        const auto& menu = std::get<MenuResult>(result.data);
+        {
+          RenderLock lock(*this);
+          if (SETTINGS.orientation != menu.orientation) {
+            SETTINGS.orientation = menu.orientation;
+            SETTINGS.saveToFile();
+            ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
+          }
+          updateLayoutIfChanged(renderer);
+        }
+
+        if (result.isCancelled) {
+          requestUpdate();
+          return;
+        }
+
+        switch (static_cast<EpubReaderMenuActivity::MenuAction>(menu.action)) {
+          case EpubReaderMenuActivity::MenuAction::TEXT_SETTINGS:
+            startActivityForResult(
+                std::make_unique<TextSettingsActivity>(renderer, mappedInput, &sdFontSystem.registry(),
+                                                       TextSettingsActivity::Tab::Family, textsettings::Profile::Txt),
+                [this](const ActivityResult&) {
+                  {
+                    RenderLock lock(*this);
+                    updateLayoutIfChanged(renderer);
+                  }
+                  openReaderOptions();
+                });
+            break;
+          case EpubReaderMenuActivity::MenuAction::SCREENSHOT: {
+            {
+              RenderLock lock(*this);
+              pendingScreenshot = true;
+            }
+            requestUpdate();
+            break;
+          }
+          case EpubReaderMenuActivity::MenuAction::DISPLAY_QR: {
+            std::string pageText;
+            {
+              RenderLock lock(*this);
+              if (currentPageLoaded) {
+                size_t needed = currentPageLines.empty() ? 0 : currentPageLines.size() - 1;
+                for (const auto& line : currentPageLines) needed += line.size();
+                pageText.reserve(needed);
+                for (size_t i = 0; i < currentPageLines.size(); ++i) {
+                  if (i > 0) pageText.push_back('\n');
+                  pageText += currentPageLines[i];
+                }
+              }
+            }
+            if (pageText.empty()) {
+              requestUpdate();
+            } else {
+              startActivityForResult(std::make_unique<QrDisplayActivity>(renderer, mappedInput, pageText),
+                                     [this](const ActivityResult&) { openReaderOptions(); });
+            }
+            break;
+          }
+          case EpubReaderMenuActivity::MenuAction::GO_HOME:
+            onGoHome();
+            break;
+          case EpubReaderMenuActivity::MenuAction::NIGHT_MODE:
+          case EpubReaderMenuActivity::MenuAction::FRONTLIGHT:
+          case EpubReaderMenuActivity::MenuAction::ROTATE_SCREEN:
+            requestUpdate();
+            break;
+          default:
+            requestUpdate();
+            break;
+        }
+      });
+}
+
 void TxtReaderActivity::initializeReader(GfxRenderer& renderer) {
   if (initialized) {
     return;
   }
 
-  // Store current settings for cache validation
+  // Latch the layout settings for this reader session.
   cachedFontId = SETTINGS.getReaderFontId();
+  cachedLineSpacing = SETTINGS.lineSpacing;
   cachedScreenMargin = SETTINGS.screenMargin;
   cachedParagraphAlignment = SETTINGS.paragraphAlignment;
+  cachedOrientation = SETTINGS.orientation;
+  cachedHyphenationEnabled = SETTINGS.hyphenationEnabled != 0;
 
-  // Calculate viewport dimensions
+  updateViewport(renderer);
+
+  // Known issue: progress records have no line-spacing identity, so changing
+  // the global setting while TXT is closed can restore a stale ordinal/history.
+  TxtProgressState restoredState;
+  progressFile.load(*txt, restoredState, cachedHyphenationEnabled);
+  if (!pageHistory.resetWithPrevious(restoredState.previousPageStarts, restoredState.previousPageCount,
+                                     restoredState.pageStartOffset)) {
+    pageHistory.reset(restoredState.pageStartOffset);
+  }
+  pageEstimate.reset();
+  currentDisplayOrdinal = restoredState.displayOrdinal;
+  hasCurrentDisplayOrdinal = restoredState.hasDisplayOrdinal;
+  lastVisibleProgressState = {};
+  hasVisiblePageStart = false;
+  currentPageEndOffset = 0;
+  currentPageLoaded = false;
+  endOfBookRequested = false;
+  currentPageLines.clear();
+  currentPageLines.reserve(static_cast<size_t>(linesPerPage));
+  initialized = true;
+}
+
+void TxtReaderActivity::updateViewport(GfxRenderer& renderer) {
   renderer.getOrientedViewableTRBL(&cachedOrientedMarginTop, &cachedOrientedMarginRight, &cachedOrientedMarginBottom,
                                    &cachedOrientedMarginLeft);
   cachedOrientedMarginTop += cachedScreenMargin;
@@ -57,184 +187,12 @@ void TxtReaderActivity::initializeReader(GfxRenderer& renderer) {
       std::max(cachedScreenMargin, static_cast<uint8_t>(UITheme::getInstance().getStatusBarHeight()));
 
   viewportWidth = renderer.getScreenWidth() - cachedOrientedMarginLeft - cachedOrientedMarginRight;
-  const int viewportHeight = renderer.getScreenHeight() - cachedOrientedMarginTop - cachedOrientedMarginBottom;
-  const int lineHeight = renderer.getLineHeight(cachedFontId);
-
-  linesPerPage = viewportHeight / lineHeight;
-  if (linesPerPage < 1) linesPerPage = 1;
+  viewportHeight = renderer.getScreenHeight() - cachedOrientedMarginTop - cachedOrientedMarginBottom;
+  lineAdvance =
+      TxtPageMetrics::effectiveLineAdvance(renderer.getLineHeight(cachedFontId, SETTINGS.getReaderLineCompression()));
+  linesPerPage = TxtPageMetrics::linesPerPage(viewportHeight, lineAdvance);
 
   LOG_DBG("TRS", "Viewport: %dx%d, lines per page: %d", viewportWidth, viewportHeight, linesPerPage);
-
-  // Try to load cached page index first
-  if (!loadPageIndexCache()) {
-    // Cache not found, build page index
-    buildPageIndex(renderer);
-    // Save to cache for next time
-    savePageIndexCache();
-  }
-
-  // Load saved progress
-  loadProgress();
-
-  initialized = true;
-}
-
-void TxtReaderActivity::buildPageIndex(GfxRenderer& renderer) {
-  pageOffsets.clear();
-  pageOffsets.push_back(0);  // First page starts at offset 0
-
-  size_t offset = 0;
-  const size_t fileSize = txt->getFileSize();
-
-  LOG_DBG("TRS", "Building page index for %zu bytes...", fileSize);
-
-  GUI.drawPopup(renderer, tr(STR_INDEXING));
-
-  while (offset < fileSize) {
-    std::vector<std::string> tempLines;
-    size_t nextOffset = offset;
-
-    if (!loadPageAtOffset(renderer, offset, tempLines, nextOffset)) {
-      break;
-    }
-
-    if (nextOffset <= offset) {
-      // No progress made, avoid infinite loop
-      break;
-    }
-
-    offset = nextOffset;
-    if (offset < fileSize) {
-      pageOffsets.push_back(offset);
-    }
-
-    // Yield to other tasks periodically
-    if (pageOffsets.size() % 20 == 0) {
-      vTaskDelay(1);
-    }
-  }
-
-  totalPages = pageOffsets.size();
-  LOG_DBG("TRS", "Built page index: %d pages", totalPages);
-}
-
-bool TxtReaderActivity::loadPageAtOffset(const GfxRenderer& renderer, size_t offset, std::vector<std::string>& outLines,
-                                         size_t& nextOffset) {
-  outLines.clear();
-  const size_t fileSize = txt->getFileSize();
-
-  if (offset >= fileSize) {
-    return false;
-  }
-
-  // Read a chunk from file
-  size_t chunkSize = std::min(CHUNK_SIZE, fileSize - offset);
-  auto* buffer = static_cast<uint8_t*>(malloc(chunkSize + 1));
-  if (!buffer) {
-    LOG_ERR("TRS", "Failed to allocate %zu bytes", chunkSize);
-    return false;
-  }
-
-  if (!txt->readContent(buffer, offset, chunkSize)) {
-    free(buffer);
-    return false;
-  }
-  buffer[chunkSize] = '\0';
-
-  if (renderer.isSdCardFont(cachedFontId)) {
-    renderer.ensureSdCardFontReady(cachedFontId, reinterpret_cast<const char*>(buffer), /*styleMask=*/0x01);
-  }
-
-  // Parse lines from buffer
-  size_t pos = 0;
-
-  while (pos < chunkSize && static_cast<int>(outLines.size()) < linesPerPage) {
-    // Find end of line
-    size_t lineEnd = pos;
-    while (lineEnd < chunkSize && buffer[lineEnd] != '\n') {
-      lineEnd++;
-    }
-
-    // Check if we have a complete line
-    bool lineComplete = (lineEnd < chunkSize) || (offset + lineEnd >= fileSize);
-
-    if (!lineComplete && static_cast<int>(outLines.size()) > 0) {
-      // Incomplete line and we already have some lines, stop here
-      break;
-    }
-
-    size_t lineContentLen = lineEnd - pos;
-    bool hasCR = (lineContentLen > 0 && buffer[pos + lineContentLen - 1] == '\r');
-    size_t displayLen = hasCR ? lineContentLen - 1 : lineContentLen;
-
-    std::string line(reinterpret_cast<char*>(buffer + pos), displayLen);
-    size_t lineBytePos = 0;
-
-    do {
-      if (line.empty()) {
-        outLines.emplace_back();
-        break;
-      }
-
-      int lineWidth = renderer.getTextAdvanceX(cachedFontId, line.c_str(), EpdFontFamily::REGULAR);
-
-      if (lineWidth <= viewportWidth) {
-        outLines.push_back(line);
-        lineBytePos = displayLen;
-        line.clear();
-        break;
-      }
-
-      // Find break point
-      size_t breakPos = line.length();
-      while (breakPos > 0 && renderer.getTextAdvanceX(cachedFontId, line.substr(0, breakPos).c_str(),
-                                                      EpdFontFamily::REGULAR) > viewportWidth) {
-        // Try to break at space
-        size_t spacePos = line.rfind(' ', breakPos - 1);
-        if (spacePos != std::string::npos && spacePos > 0) {
-          breakPos = spacePos;
-        } else {
-          // Break at character boundary for UTF-8
-          breakPos--;
-          while (breakPos > 0 && (line[breakPos] & 0xC0) == 0x80) {
-            breakPos--;
-          }
-        }
-      }
-
-      if (breakPos == 0) {
-        breakPos = 1;
-      }
-
-      outLines.push_back(line.substr(0, breakPos));
-
-      size_t skipChars = breakPos;
-      if (breakPos < line.length() && line[breakPos] == ' ') {
-        skipChars++;
-      }
-      lineBytePos += skipChars;
-      line = line.substr(skipChars);
-    } while (!line.empty() && static_cast<int>(outLines.size()) < linesPerPage);
-
-    if (line.empty()) {
-      pos = lineEnd + 1;
-    } else {
-      pos = pos + lineBytePos;
-      break;
-    }
-  }
-
-  if (pos == 0 && !outLines.empty()) {
-    pos = 1;
-  }
-
-  nextOffset = offset + pos;
-  if (nextOffset > fileSize) {
-    nextOffset = fileSize;
-  }
-
-  free(buffer);
-  return !outLines.empty();
 }
 
 void TxtReaderActivity::renderBook() {
@@ -244,34 +202,97 @@ void TxtReaderActivity::renderBook() {
 
   if (!initialized) {
     initializeReader(renderer);
+    if (initialized && txt->getFileSize() > 0) GUI.drawPopup(renderer, tr(STR_INDEXING));
   }
 
-  if (pageOffsets.empty()) {
+  if (pendingInitialIndexingPopup) {
+    pendingInitialIndexingPopup = false;
+    if (txt->getFileSize() > 0) GUI.drawPopup(renderer, tr(STR_INDEXING));
+  }
+
+  updateLayoutIfChanged(renderer);
+
+  if (txt->getFileSize() == 0) {
+    currentPageLoaded = true;
+    currentPageEndOffset = 0;
     renderer.clearScreen();
     renderer.drawCenteredText(UI_12_FONT_ID, 300, tr(STR_EMPTY_FILE), true, EpdFontFamily::BOLD);
     renderer.displayBuffer();
+    markPageRendered();
+    persistVisibleCheckpoint();
+    if (pendingScreenshot) {
+      pendingScreenshot = false;
+      ScreenshotUtil::takeScreenshot(renderer);
+    }
     return;
   }
 
-  // Bounds check
-  if (currentPage < 0) currentPage = 0;
-  if (currentPage >= totalPages) currentPage = totalPages - 1;
-
-  // Load current page content
-  size_t offset = pageOffsets[currentPage];
-  size_t nextOffset;
-  currentPageLines.clear();
-  loadPageAtOffset(renderer, offset, currentPageLines, nextOffset);
+  if (!currentPageLoaded) {
+    const size_t pageStartOffset = pageHistory.currentOffset();
+    if (!pageReader.loadPage(*txt, renderer, cachedFontId, viewportWidth, linesPerPage, pageStartOffset,
+                             currentPageLines, currentPageEndOffset, cachedHyphenationEnabled) ||
+        currentPageEndOffset <= pageStartOffset) {
+      LOG_ERR("TRS", "Failed to load TXT page at byte %zu", pageStartOffset);
+      renderer.clearScreen();
+      renderer.displayBuffer();
+      return;
+    }
+    pageEstimate.observePage(pageStartOffset, currentPageEndOffset);
+    if (!hasCurrentDisplayOrdinal) {
+      currentDisplayOrdinal = pageEstimate.pageNumberAt(pageStartOffset);
+      hasCurrentDisplayOrdinal = true;
+    }
+    currentPageLoaded = true;
+  }
 
   renderer.clearScreen();
   renderPage(renderer);
+  markPageRendered();
+  persistVisibleCheckpoint();
+  if (pendingScreenshot) {
+    pendingScreenshot = false;
+    ScreenshotUtil::takeScreenshot(renderer);
+  }
+}
 
-  // Save progress
-  saveProgress();
+void TxtReaderActivity::updateLayoutIfChanged(GfxRenderer& renderer) {
+  if (!initialized) return;
+
+  const size_t pageStartOffset = pageHistory.currentOffset();
+  const int currentFontId = SETTINGS.getReaderFontId();
+  const bool mustReflow = cachedFontId != currentFontId || cachedLineSpacing != SETTINGS.lineSpacing ||
+                          cachedScreenMargin != SETTINGS.screenMargin || cachedOrientation != SETTINGS.orientation ||
+                          cachedHyphenationEnabled != (SETTINGS.hyphenationEnabled != 0);
+  cachedFontId = currentFontId;
+  cachedLineSpacing = SETTINGS.lineSpacing;
+  cachedScreenMargin = SETTINGS.screenMargin;
+  cachedParagraphAlignment = SETTINGS.paragraphAlignment;
+  cachedOrientation = SETTINGS.orientation;
+  cachedHyphenationEnabled = SETTINGS.hyphenationEnabled != 0;
+  if (!mustReflow) return;
+
+  // Font, line-spacing, margin, and orientation changes can alter the source
+  // bytes that fit on each page. Rebuild from the visible byte anchor and
+  // discard old layout history so progress remains source-based.
+  updateViewport(renderer);
+  const TxtProgressState resetState = txtlayout::invalidateAtVisibleAnchor(
+      pageHistory, pageEstimate, pageStartOffset, currentDisplayOrdinal, hasCurrentDisplayOrdinal);
+  currentPageEndOffset = pageStartOffset;
+  currentPageLoaded = false;
+  currentPageLines.clear();
+  currentPageLines.reserve(static_cast<size_t>(linesPerPage));
+  endOfBookRequested = false;
+
+  // Clear the persisted three-page micro-history and old display ordinal at
+  // the same source anchor. The page estimate will be rebuilt from this page.
+  lastVisibleProgressState = resetState;
+  hasVisiblePageStart = true;
+  if (!progressFile.save(*txt, resetState, cachedHyphenationEnabled)) {
+    LOG_ERR("TRS", "Failed to reset TXT layout history at byte %zu", pageStartOffset);
+  }
 }
 
 void TxtReaderActivity::renderPage(GfxRenderer& renderer) {
-  const int lineHeight = renderer.getLineHeight(cachedFontId);
   const int contentWidth = viewportWidth;
 
   // Render text lines with alignment
@@ -307,7 +328,7 @@ void TxtReaderActivity::renderPage(GfxRenderer& renderer) {
 
         renderer.drawText(cachedFontId, x, y, line.c_str());
       }
-      y += lineHeight;
+      y += lineAdvance;
     }
   };
 
@@ -330,187 +351,97 @@ void TxtReaderActivity::renderPage(GfxRenderer& renderer) {
   }
 }
 
+void TxtReaderActivity::persistVisibleCheckpoint() {
+  if (!txt) return;
+
+  TxtProgressState state;
+  state.pageStartOffset = pageHistory.currentOffset();
+  state.hasDisplayOrdinal = hasCurrentDisplayOrdinal;
+  state.displayOrdinal = currentDisplayOrdinal;
+  state.previousPageCount = pageHistory.copyPreviousOffsets(state.previousPageStarts);
+  lastVisibleProgressState = state;
+  hasVisiblePageStart = true;
+  if (!progressFile.save(*txt, state, cachedHyphenationEnabled)) {
+    LOG_ERR("TRS", "Failed to save TXT position at byte %zu", state.pageStartOffset);
+    return;
+  }
+}
+
+void TxtReaderActivity::onExit() {
+  {
+    // A changed layout may reach Home before another render can invalidate the
+    // old pagination history. ActivityManager enters onExit with RenderLock
+    // already held, so this scope must not acquire the non-recursive lock again.
+    if (txt && initialized) updateLayoutIfChanged(renderer);
+  }
+  if (txt && hasVisiblePageStart && !progressFile.save(*txt, lastVisibleProgressState, cachedHyphenationEnabled)) {
+    LOG_ERR("TRS", "Failed to save TXT position on exit at byte %zu", lastVisibleProgressState.pageStartOffset);
+  }
+  ReaderActivity::onExit();
+}
+
 void TxtReaderActivity::renderStatusBar() const {
-  const float progress = totalPages > 0 ? (currentPage + 1) * 100.0f / totalPages : 0;
   std::string title;
   if (SETTINGS.statusBarSpec().showsTitle()) {
     title = txt->getTitle();
   }
-  GUI.drawStatusBar(renderer, progress, currentPage + 1, totalPages, title);
+  const int currentPageNumber = static_cast<int>(std::min<size_t>(estimatedCurrentPageNumber(), INT_MAX));
+  GUI.drawStatusBar(renderer, estimatedProgressPercent(), currentPageNumber, estimatedTotalPages(), title, 0, 0, true,
+                    false, true);
+}
+
+int TxtReaderActivity::estimatedTotalPages() const {
+  if (!txt || txt->getFileSize() == 0) return 0;
+
+  const size_t currentPageNumber = estimatedCurrentPageNumber();
+  const size_t visiblePageOffset = currentPageLoaded ? currentPageEndOffset : pageHistory.currentOffset();
+  const size_t totalPages =
+      pageEstimate.totalPagesFrom(currentPageNumber, txt->getFileSize(), visiblePageOffset, currentPageLoaded);
+  return static_cast<int>(std::min<size_t>(totalPages, INT_MAX));
+}
+
+size_t TxtReaderActivity::estimatedCurrentPageNumber() const {
+  return hasCurrentDisplayOrdinal ? currentDisplayOrdinal : pageEstimate.pageNumberAt(pageHistory.currentOffset());
+}
+
+float TxtReaderActivity::estimatedProgressPercent() const {
+  if (!txt || txt->getFileSize() == 0 || !currentPageLoaded) return 0;
+  return std::min(100.0f, static_cast<float>(currentPageEndOffset) * 100.0f / static_cast<float>(txt->getFileSize()));
 }
 
 bool TxtReaderActivity::pageTurn(bool isForward) {
-  // Ignore paging until initializeReader has established the page index
-  if (!initialized) {
-    return false;
-  }
+  RenderLock lock(*this);
+  if (!initialized || endOfBookRequested) return false;
   if (isForward) {
-    if (currentPage < totalPages) {
-      currentPage++;
-      return true;
+    if (!currentPageLoaded) return false;
+    if (pageHistory.hasForward()) {
+      if (!pageHistory.forward()) return false;
+    } else {
+      if (currentPageEndOffset >= txt->getFileSize()) {
+        endOfBookRequested = true;
+        return true;
+      }
+      if (!pageHistory.advance(currentPageEndOffset)) return false;
+    }
+    if (hasCurrentDisplayOrdinal && currentDisplayOrdinal < std::numeric_limits<size_t>::max()) {
+      ++currentDisplayOrdinal;
     }
   } else {
-    if (currentPage > 0) {
-      currentPage--;
-      return true;
-    }
+    if (!pageHistory.retreat()) return false;
+    if (hasCurrentDisplayOrdinal && currentDisplayOrdinal > 1) --currentDisplayOrdinal;
   }
-  return false;
-}
-
-bool TxtReaderActivity::skipPages(int amount) {
-  if (!initialized) {
-    return false;
-  }
-  int newPage = currentPage + amount;
-  if (newPage < 0) newPage = 0;
-  // Clamp to totalPages, not totalPages - 1: pageTurn() lets currentPage reach
-  // totalPages and isAtEndOfBook() treats that as the end-of-book sentinel, so
-  // a forward skip must be able to reach it too.
-  if (newPage > totalPages) newPage = totalPages;
-  if (newPage != currentPage) {
-    currentPage = newPage;
-    return true;
-  }
-  return false;
-}
-
-bool TxtReaderActivity::isAtEndOfBook() const { return initialized && currentPage >= totalPages; }
-
-void TxtReaderActivity::onReturnFromEndOfBook() { currentPage = totalPages > 0 ? totalPages - 1 : 0; }
-
-void TxtReaderActivity::saveProgress() const {
-  uint8_t data[4];
-  data[0] = currentPage & 0xFF;
-  data[1] = (currentPage >> 8) & 0xFF;
-  data[2] = 0;
-  data[3] = 0;
-  if (!ProgressFile::writeAtomic(txt->getCachePath(), data, sizeof(data))) {
-    LOG_ERR("TRS", "Failed to save progress: page %d", currentPage);
-  }
-}
-
-void TxtReaderActivity::loadProgress() {
-  HalFile f;
-  if (Storage.openFileForRead("TRS", txt->getCachePath() + "/progress.bin", f)) {
-    uint8_t data[4];
-    if (f.read(data, 4) == 4) {
-      currentPage = data[0] + (data[1] << 8);
-      if (currentPage >= totalPages) {
-        currentPage = totalPages - 1;
-      }
-      if (currentPage < 0) {
-        currentPage = 0;
-      }
-      LOG_DBG("TRS", "Loaded progress: page %d/%d", currentPage, totalPages);
-    }
-  }
-}
-
-bool TxtReaderActivity::loadPageIndexCache() {
-  std::string cachePath = txt->getCachePath() + "/index.bin";
-  HalFile f;
-  if (!Storage.openFileForRead("TRS", cachePath, f)) {
-    LOG_DBG("TRS", "No page index cache found");
-    return false;
-  }
-
-  uint32_t magic;
-  serialization::readPod(f, magic);
-  if (magic != CACHE_MAGIC) {
-    LOG_DBG("TRS", "Cache magic mismatch, rebuilding");
-    return false;
-  }
-
-  uint8_t version;
-  serialization::readPod(f, version);
-  if (version != CACHE_VERSION) {
-    LOG_DBG("TRS", "Cache version mismatch (%d != %d), rebuilding", version, CACHE_VERSION);
-    return false;
-  }
-
-  uint32_t fileSize;
-  serialization::readPod(f, fileSize);
-  if (fileSize != txt->getFileSize()) {
-    LOG_DBG("TRS", "Cache file size mismatch, rebuilding");
-    return false;
-  }
-
-  int32_t cachedWidth;
-  serialization::readPod(f, cachedWidth);
-  if (cachedWidth != viewportWidth) {
-    LOG_DBG("TRS", "Cache viewport width mismatch, rebuilding");
-    return false;
-  }
-
-  int32_t cachedLines;
-  serialization::readPod(f, cachedLines);
-  if (cachedLines != linesPerPage) {
-    LOG_DBG("TRS", "Cache lines per page mismatch, rebuilding");
-    return false;
-  }
-
-  int32_t fontId;
-  serialization::readPod(f, fontId);
-  if (fontId != cachedFontId) {
-    LOG_DBG("TRS", "Cache font ID mismatch (%d != %d), rebuilding", fontId, cachedFontId);
-    return false;
-  }
-
-  int32_t margin;
-  serialization::readPod(f, margin);
-  if (margin != cachedScreenMargin) {
-    LOG_DBG("TRS", "Cache screen margin mismatch, rebuilding");
-    return false;
-  }
-
-  uint8_t alignment;
-  serialization::readPod(f, alignment);
-  if (alignment != cachedParagraphAlignment) {
-    LOG_DBG("TRS", "Cache paragraph alignment mismatch, rebuilding");
-    return false;
-  }
-
-  uint32_t numPages;
-  serialization::readPod(f, numPages);
-
-  pageOffsets.clear();
-  pageOffsets.reserve(numPages);
-
-  for (uint32_t i = 0; i < numPages; i++) {
-    uint32_t offset;
-    serialization::readPod(f, offset);
-    pageOffsets.push_back(offset);
-  }
-
-  totalPages = pageOffsets.size();
-  LOG_DBG("TRS", "Loaded page index cache: %d pages", totalPages);
+  currentPageLoaded = false;
+  currentPageLines.clear();
   return true;
 }
 
-void TxtReaderActivity::savePageIndexCache() const {
-  std::string cachePath = txt->getCachePath() + "/index.bin";
-  HalFile f;
-  if (!Storage.openFileForWrite("TRS", cachePath, f)) {
-    LOG_ERR("TRS", "Failed to save page index cache");
-    return;
-  }
+bool TxtReaderActivity::isAtEndOfBook() const {
+  return initialized.load(std::memory_order_acquire) && endOfBookRequested.load(std::memory_order_acquire);
+}
 
-  serialization::writePod(f, CACHE_MAGIC);
-  serialization::writePod(f, CACHE_VERSION);
-  serialization::writePod(f, static_cast<uint32_t>(txt->getFileSize()));
-  serialization::writePod(f, static_cast<int32_t>(viewportWidth));
-  serialization::writePod(f, static_cast<int32_t>(linesPerPage));
-  serialization::writePod(f, static_cast<int32_t>(cachedFontId));
-  serialization::writePod(f, static_cast<int32_t>(cachedScreenMargin));
-  serialization::writePod(f, cachedParagraphAlignment);
-  serialization::writePod(f, static_cast<uint32_t>(pageOffsets.size()));
-
-  for (size_t offset : pageOffsets) {
-    serialization::writePod(f, static_cast<uint32_t>(offset));
-  }
-
-  LOG_DBG("TRS", "Saved page index cache: %d pages", totalPages);
+void TxtReaderActivity::onReturnFromEndOfBook() {
+  RenderLock lock(*this);
+  endOfBookRequested = false;
 }
 
 ScreenshotInfo TxtReaderActivity::getScreenshotInfo() const {
@@ -520,9 +451,9 @@ ScreenshotInfo TxtReaderActivity::getScreenshotInfo() const {
     const std::string t = txt->getTitle();
     snprintf(info.title, sizeof(info.title), "%s", t.c_str());
   }
-  info.currentPage = currentPage + 1;
-  info.totalPages = totalPages;
-  info.progressPercent = totalPages > 0 ? static_cast<int>((currentPage + 1) * 100.0f / totalPages + 0.5f) : 0;
+  info.currentPage = static_cast<int>(std::min<size_t>(estimatedCurrentPageNumber(), INT_MAX));
+  info.totalPages = estimatedTotalPages();
+  info.progressPercent = static_cast<int>(estimatedProgressPercent() + 0.5f);
   if (info.progressPercent > 100) info.progressPercent = 100;
   return info;
 }

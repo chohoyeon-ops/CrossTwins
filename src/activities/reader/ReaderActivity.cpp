@@ -3,6 +3,7 @@
 #include <FontCacheManager.h>
 #include <FsHelpers.h>
 #include <HalStorage.h>
+#include <I18n.h>
 #include <Memory.h>
 
 #include <algorithm>
@@ -60,7 +61,18 @@ void ReaderActivity::onEnter() {
     return;
   }
 
+  // A failed attempt must not become the automatic wake target. Progress and recents remain intact.
+  if (!APP_STATE.openEpubPath.empty()) {
+    APP_STATE.openEpubPath.clear();
+    APP_STATE.saveToFile();
+  }
+
   sdFontSystem.ensureLoaded(renderer);
+  if (!FsHelpers::hasXtcExtension(bookPath) && SETTINGS.getReaderFontId() == 0) {
+    LOG_ERR("READER", "Selected SD reader font is unavailable");
+    activityManager.goToFullScreenMessage(tr(STR_NO_FONTS_AVAILABLE));
+    return;
+  }
   applyInitialOrientation();
 
   if (!loadBook()) {
@@ -68,13 +80,21 @@ void ReaderActivity::onEnter() {
     return;
   }
 
-  APP_STATE.openEpubPath = bookPath;
-  APP_STATE.saveToFile();
-  RECENT_BOOKS.addBook(bookPath, getBookTitle(), getBookAuthor(), getBookThumbBmpPath());
   requestUpdate();
 }
 
+void ReaderActivity::rememberBookOnceRendered() {
+  if (bookRemembered || !pageRendered.load(std::memory_order_acquire)) return;
+  bookRemembered = true;
+  APP_STATE.openEpubPath = bookPath;
+  APP_STATE.saveToFile();
+  RECENT_BOOKS.addBook(bookPath, getBookTitle(), getBookAuthor(), getBookThumbBmpPath());
+}
+
 void ReaderActivity::onExit() {
+  // Home gestures/sleep can bypass loop() after a completed render.
+  // ActivityManager already holds RenderLock, so the success signal is settled.
+  rememberBookOnceRendered();
   Activity::onExit();
 
   // Keep rebuildable font buffers from pinning the heap between reading sessions.
@@ -152,6 +172,7 @@ bool ReaderActivity::handleEndOfBookPageTurn(const bool prevTriggered, const boo
 }
 
 void ReaderActivity::loop() {
+  rememberBookOnceRendered();
   clearEndOfBookOptionsIfNeeded();
   if (handleEndOfBookMenu()) return;
   if (handleFormatInput()) return;

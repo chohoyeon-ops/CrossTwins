@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "TextSettingsCapabilities.h"
 #include "TextSettingsPreview.h"
 #include "activities/UiTabListActivity.h"
 #include "components/OptionPopup.h"
@@ -21,7 +22,7 @@ class TextSettingsActivity final : public UiTabListActivity {
   enum class Tab : uint8_t { Family, Size, Layout, Style, Count };
 
   TextSettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const SdCardFontRegistry* registry,
-                       Tab initialTab = Tab::Family);
+                       Tab initialTab = Tab::Family, textsettings::Profile profile = textsettings::Profile::Epub);
 
   void onEnter() override;
   void render(RenderLock&&) override;
@@ -29,21 +30,12 @@ class TextSettingsActivity final : public UiTabListActivity {
  private:
   // Row indices per tab. enum class (not plain enum) so a LayoutRow can't be
   // silently confused with a StyleRow of equal value.
-  enum class LayoutRow {
-    LineSpacing,
-    WordSpacing,
-    CharacterSpacing,
-    ParaSpacing,
-    ParaIndentation,
-    Alignment,
-    ScreenMargin,
-    Count
-  };
-  enum class StyleRow { FocusReading, Hyphenation, EmbeddedStyle, AntiAliasing, Count };
+  using LayoutRow = textsettings::LayoutControl;
+  using StyleRow = textsettings::StyleControl;
 
   // --- UiTabListActivity contract ---
   int listCount() const override;
-  int tabCount() const override { return static_cast<int>(Tab::Count); }
+  int tabCount() const override { return static_cast<int>(textsettings::tabCount(profile_)); }
   int activeTab() const override { return static_cast<int>(tab_); }
   const char* tabLabel(int index) const override;
   void buildScreen(UiScreen& screen) override;
@@ -85,8 +77,6 @@ class TextSettingsActivity final : public UiTabListActivity {
 
   struct FontEntry {
     std::string name;
-    bool isBuiltin;
-    uint8_t settingIndex;
   };
 
   struct SizeEntry {
@@ -101,6 +91,7 @@ class TextSettingsActivity final : public UiTabListActivity {
   textsettings::PreviewLayout previewLayout_;  // cached preview line layout; relaid only on setting/geometry change
 
   Tab tab_;
+  textsettings::Profile profile_;
   int currentFamilyIndex_ = 0;
   int currentSizeIndex_ = 0;
 

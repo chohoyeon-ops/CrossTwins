@@ -1,0 +1,2 @@
+# SdFat patch contexts and reviewed source hashes require LF on Windows too.
+scripts/sdfat_patches/*.patch text eol=lf

@@ -65,6 +65,7 @@ add_subdirectory(page_link)
 add_subdirectory(content_opf_parser)
 add_subdirectory(chapter_position)
 add_subdirectory(home_button)
+add_subdirectory(txt_on_demand)
 
 add_subdirectory(inflate_stream)
 add_subdirectory(fs_helpers)
@@ -73,3 +74,15 @@ add_subdirectory(absolute_grayscale)
 
 add_subdirectory(sd_card_font)
 add_subdirectory(glyph_bitmap)
+add_subdirectory(phase2a)
+add_subdirectory(phase2b)
+add_subdirectory(reader_contention)
+add_subdirectory(reader_remember)
+add_subdirectory(epub_spine_chunks)
+
+add_subdirectory(framebuffer_loan)
+
+add_subdirectory(protected_paths)
+add_subdirectory(settings_password)
+add_subdirectory(section_soft_flush)
+add_subdirectory(font_upload)

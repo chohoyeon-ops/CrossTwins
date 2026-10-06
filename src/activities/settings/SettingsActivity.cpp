@@ -32,6 +32,7 @@
 #include "SilentRestart.h"
 #include "StatusBarSettingsActivity.h"
 #include "TextSettingsActivity.h"
+#include "UserVisibleFirmwareVersion.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/IntervalSelectionActivity.h"
 #include "components/UITheme.h"
@@ -87,6 +88,7 @@ void SettingsActivity::rebuildSettingsLists() {
   }
 
   // Append device-only ACTION items
+  displaySettings.push_back(SettingInfo::Action(StrId::STR_SLIDESHOW_INTERVAL, SettingAction::SlideshowInterval));
   if (!BoardConfig::hasTouch()) {
     controlsSettings.insert(controlsSettings.begin(),
                             SettingInfo::Action(StrId::STR_REMAP_FRONT_BUTTONS, SettingAction::RemapFrontButtons));
@@ -312,6 +314,7 @@ void SettingsActivity::toggleCurrentSetting() {
     const uint8_t totalValues = setting.enumStringValues.empty()
                                     ? static_cast<uint8_t>(setting.enumLabels().size())
                                     : static_cast<uint8_t>(setting.enumStringValues.size());
+    if (totalValues == 0) return;
     const uint8_t cur = setting.valueGetter();
     if (totalValues > 2) {
       const auto valueSetter = setting.valueSetter;
@@ -322,7 +325,7 @@ void SettingsActivity::toggleCurrentSetting() {
         rebuildSettingsLists();
       };
       if (!setting.enumStringValues.empty()) {
-        optionPopup.show(setting.nameId, setting.enumStringValues, cur, std::move(onSelect));
+        optionPopup.show(setting.nameId, setting.enumStringValues, cur < totalValues ? cur : 0, std::move(onSelect));
       } else {
         const auto enumLabels = setting.enumLabels();
         optionPopup.show(setting.nameId, enumLabels.data(), static_cast<int>(enumLabels.size()), cur,
@@ -442,6 +445,9 @@ void SettingsActivity::toggleCurrentSetting() {
           LOG_ERR("SETTINGS", "OOM: AboutActivity");
         }
         break;
+      case SettingAction::SlideshowInterval:
+        openSlideshowIntervalPicker();
+        break;
       case SettingAction::None:
         // Do nothing
         break;
@@ -496,8 +502,35 @@ void SettingsActivity::openSleepTimeoutPicker() {
       });
 }
 
+void SettingsActivity::openSlideshowIntervalPicker() {
+  auto activity = makeUniqueNoThrow<IntervalSelectionActivity>(
+      renderer, mappedInput, "SlideshowInterval", StrId::STR_SLIDESHOW_INTERVAL, SETTINGS.slideshowIntervalSeconds,
+      CrossPointSettings::MIN_SLIDESHOW_INTERVAL_SECONDS, CrossPointSettings::MAX_SLIDESHOW_INTERVAL_SECONDS, 10, 60,
+      StrId::STR_NONE_OPT, false, StrId::STR_NONE_OPT, true);
+  if (!activity) {
+    LOG_ERR("SETTINGS", "OOM: slideshow interval picker");
+    return;
+  }
+  startActivityForResult(std::move(activity), [this](const ActivityResult& result) {
+    if (!result.isCancelled) {
+      const auto selected = static_cast<uint16_t>(std::get<IntervalResult>(result.data).value);
+      if (selected != SETTINGS.slideshowIntervalSeconds) {
+        SETTINGS.slideshowIntervalSeconds = selected;
+        SETTINGS.saveToFile();
+      }
+    }
+    requestUpdate();
+  });
+}
+
 std::string SettingsActivity::settingValueText(const SettingInfo& setting) {
   if (setting.action == SettingAction::HomeButton) return tr(STR_CONFIGURE);
+  if (setting.action == SettingAction::SlideshowInterval) {
+    char valueBuffer[32];
+    IntervalSelectionActivity::formatDurationSeconds(valueBuffer, sizeof(valueBuffer),
+                                                     SETTINGS.slideshowIntervalSeconds);
+    return valueBuffer;
+  }
   if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
     return SETTINGS.*(setting.valuePtr) ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
   }
@@ -510,6 +543,9 @@ std::string SettingsActivity::settingValueText(const SettingInfo& setting) {
     return I18N.get(enumLabels[value]);
   }
   if (setting.type == SettingType::ENUM && setting.valueGetter) {
+    if (setting.nameId == StrId::STR_FONT_FAMILY && SETTINGS.sdFontFamilyName[0] == '\0') {
+      return tr(STR_NOT_SET);
+    }
     const uint8_t value = setting.valueGetter();
     if (!setting.enumStringValues.empty() && value < setting.enumStringValues.size()) {
       return setting.enumStringValues[value];
@@ -580,7 +616,7 @@ void SettingsActivity::drawChrome() {
   // Version rides in the header's trailing label slot: the footer position
   // conflicts with button hints on non-touch devices.
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_SETTINGS_TITLE),
-                 CROSSPOINT_VERSION);
+                 USER_VISIBLE_FIRMWARE_VERSION);
 }
 
 void SettingsActivity::drawFooter() {

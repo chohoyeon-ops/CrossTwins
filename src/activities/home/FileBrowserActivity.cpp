@@ -655,6 +655,10 @@ void FileBrowserActivity::buildScreen(UiScreen& screen) {
   // The trailing value here is just the short extension: skip the balanced
   // 60%-band wrap cap and let both name lines run the full width before it.
   props.balanceWrappedLabelWithValue = false;
+  props = screen.resolveListProps(props);
+  const int16_t twoLineRowHeight = static_cast<int16_t>(
+      screen.target().lineHeight(props.labelText.font) * props.labelText.maxLines + 2 * props.rowPaddingY);
+  props.rowHeight = std::max(props.rowHeight, twoLineRowHeight);
   syncListViewport(screen, props);
   // Prewarm the window at the final viewport (syncListViewport just applied
   // follow/clamping to nav.top) before the list resolves rows through the

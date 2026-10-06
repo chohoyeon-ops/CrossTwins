@@ -1,6 +1,7 @@
 #include "ParsedText.h"
 
 #include <BidiUtils.h>
+#include <CjkLineBreak.h>
 #include <GfxRenderer.h>
 #include <Logging.h>
 #include <Memory.h>
@@ -66,72 +67,6 @@ uint32_t lastCodepoint(const std::string_view word) {
 
 bool containsSoftHyphen(const std::string_view word) { return word.find(SOFT_HYPHEN_UTF8) != std::string_view::npos; }
 
-bool isNoBreakBeforeCjkPunctuation(const uint32_t cp) {
-  switch (cp) {
-    case '.':
-    case ',':
-    case ':':
-    case ';':
-    case '!':
-    case '?':
-    case ')':
-    case ']':
-    case '}':
-    case 0x00BB:  // »
-    case 0x2019:  // ’
-    case 0x201D:  // ”
-    case 0x3001:  // 、
-    case 0x3002:  // 。
-    case 0x3009:  // 〉
-    case 0x300B:  // 》
-    case 0x300D:  // 」
-    case 0x300F:  // 』
-    case 0x3011:  // 】
-    case 0x3015:  // 〕
-    case 0x3017:  // 〗
-    case 0x3019:  // 〙
-    case 0x301B:  // 〛
-    case 0xFF01:  // ！
-    case 0xFF09:  // ）
-    case 0xFF0C:  // ，
-    case 0xFF0E:  // ．
-    case 0xFF1A:  // ：
-    case 0xFF1B:  // ；
-    case 0xFF1F:  // ？
-    case 0xFF3D:  // ］
-    case 0xFF5D:  // ｝
-      return true;
-    default:
-      return false;
-  }
-}
-
-bool isNoBreakAfterCjkPunctuation(const uint32_t cp) {
-  switch (cp) {
-    case '(':
-    case '[':
-    case '{':
-    case 0x00AB:  // «
-    case 0x2018:  // ‘
-    case 0x201C:  // “
-    case 0x3008:  // 〈
-    case 0x300A:  // 《
-    case 0x300C:  // 「
-    case 0x300E:  // 『
-    case 0x3010:  // 【
-    case 0x3014:  // 〔
-    case 0x3016:  // 〖
-    case 0x3018:  // 〘
-    case 0x301A:  // 〚
-    case 0xFF08:  // （
-    case 0xFF3B:  // ［
-    case 0xFF5B:  // ｛
-      return true;
-    default:
-      return false;
-  }
-}
-
 bool containsCjkBreakableCodepoint(const std::string& text) {
   const auto* ptr = reinterpret_cast<const unsigned char*>(text.c_str());
   while (*ptr) {
@@ -154,18 +89,11 @@ uint32_t countCodepoints(const std::string_view text) {
   return count;
 }
 
-bool cjkBoundaryAllowsBreak(const uint32_t leftCp, const uint32_t rightCp) {
-  if (!utf8IsCjkBreakable(leftCp) && !utf8IsCjkBreakable(rightCp)) return false;
-  if (isNoBreakAfterCjkPunctuation(leftCp) || isNoBreakBeforeCjkPunctuation(rightCp)) return false;
-  if (utf8IsCombiningMark(rightCp)) return false;
-  return true;
-}
-
 // Korean separates words with spaces, so a boundary touching Hangul is not a gap-less break inside
 // a line. hangulLineEndBreaks() still lets a Hangul word split there at a line end.
 bool hasCjkBreakOpportunityBetween(const uint32_t leftCp, const uint32_t rightCp) {
   if (utf8IsHangul(leftCp) || utf8IsHangul(rightCp)) return false;
-  return cjkBoundaryAllowsBreak(leftCp, rightCp);
+  return cjklinebreak::cjkBoundaryAllowsBreak(leftCp, rightCp);
 }
 
 // Line-end split points inside a Hangul word, using the CJK boundary rules (no hyphen is drawn).
@@ -178,7 +106,7 @@ std::vector<Hyphenator::BreakInfo> hangulLineEndBreaks(const std::string& word) 
   while (*ptr) {
     const size_t offset = static_cast<size_t>(ptr - start);
     const uint32_t cur = utf8NextCodepoint(&ptr);
-    if ((utf8IsHangul(prev) || utf8IsHangul(cur)) && cjkBoundaryAllowsBreak(prev, cur)) {
+    if (cjklinebreak::hangulBoundaryAllowsBreak(prev, cur)) {
       breaks.push_back({offset, false});
     }
     prev = cur;
@@ -710,7 +638,7 @@ void ParsedText::ensureRubyCapacity() {
 }
 
 int ParsedText::resolveFirstLineIndent(const bool isFirstLine, const GfxRenderer& renderer, const int fontId) const {
-  if (!isFirstLine || !isNaturalAlign) {
+  if (firstLineConsumed || !isFirstLine || !isNaturalAlign) {
     return 0;
   }
   if (blockStyle.textIndentDefined && blockStyle.textIndent < 0) return blockStyle.textIndent;
@@ -796,6 +724,7 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
 
   // Remove consumed words so size() reflects only remaining words
   if (lineCount > 0) {
+    firstLineConsumed = true;
     const size_t consumed = lineBreakIndices[lineCount - 1];
     for (size_t i = 0; i < consumed; ++i) {
       wordStore.release(words[i]);  // retires arena chunks as lines are consumed
@@ -1139,7 +1068,7 @@ std::vector<size_t> ParsedText::computeHyphenatedLineBreaks(const GfxRenderer& r
 
   std::vector<size_t> lineBreakIndices;
   size_t currentIndex = 0;
-  bool isFirstLine = true;
+  bool isFirstLine = !firstLineConsumed;
 
   while (currentIndex < wordWidths.size()) {
     const size_t lineStart = currentIndex;
