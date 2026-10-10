@@ -8,7 +8,10 @@ name: Compile Release
 # Assets per board (device = x3-x4 | sticky | x4pro | x4c | papermono):
 #   crosspoint-<tag>-<device>.bin      - OTA / SD-update image, looked up by 1.6.x-ko firmware
 #                                        (upstream's per-board naming, #3493)
-#   CrossPoint-<tag>-<device>.bin      - merged full-flash image (bootloader+partitions+app)
+#   CrossPoint-<tag>-<device>-full.bin - merged full-flash image (bootloader+partitions+app).
+#                                        The -full suffix is required: GitHub asset names are
+#                                        case-insensitive, so CrossPoint-<tag>-<device>.bin would
+#                                        collide with the OTA asset above.
 # X3/X4 only, kept for older tooling:
 #   firmware.bin                       - OTA asset for 1.5.x-ko devices (legacy name, keep)
 #   CrossPoint-<tag>.bin               - merged image under the pre-1.6.5 name (web flasher)
@@ -121,7 +124,7 @@ jobs:
         mkdir -p dist
         cp "$BUILD_DIR/firmware.bin" "dist/crosspoint-${version}-${{ matrix.device }}.bin"
         esptool.py --chip ${{ matrix.chip }} merge_bin \
-          -o "dist/CrossPoint-${GITHUB_REF_NAME}-${{ matrix.device }}.bin" \
+          -o "dist/CrossPoint-${GITHUB_REF_NAME}-${{ matrix.device }}-full.bin" \
           --flash_mode dio \
           --flash_freq 80m \
           --flash_size 16MB \
@@ -130,7 +133,7 @@ jobs:
           0x10000 "$BUILD_DIR/firmware.bin"
         if [ "${{ matrix.device }}" = "x3-x4" ]; then
           cp "$BUILD_DIR/firmware.bin" dist/firmware.bin
-          cp "dist/CrossPoint-${GITHUB_REF_NAME}-x3-x4.bin" "dist/CrossPoint-${GITHUB_REF_NAME}.bin"
+          cp "dist/CrossPoint-${GITHUB_REF_NAME}-x3-x4-full.bin" "dist/CrossPoint-${GITHUB_REF_NAME}.bin"
           cp "$BUILD_DIR/bootloader.bin" "$BUILD_DIR/partitions.bin" dist/
         fi
         ls -l dist
@@ -173,11 +176,18 @@ jobs:
         version="${GITHUB_REF_NAME#v}"
         for device in x3-x4 sticky x4pro x4c papermono; do
           test -f "dist/crosspoint-${version}-${device}.bin"
-          test -f "dist/CrossPoint-${GITHUB_REF_NAME}-${device}.bin"
+          test -f "dist/CrossPoint-${GITHUB_REF_NAME}-${device}-full.bin"
         done
         for f in firmware.bin "CrossPoint-${GITHUB_REF_NAME}.bin" bootloader.bin partitions.bin; do
           test -f "dist/$f"
         done
+        # GitHub compares asset names case-insensitively; two names that differ only in
+        # case overwrite each other mid-upload.
+        dupes=$(find dist -maxdepth 1 -type f -printf '%f\n' | tr '[:upper:]' '[:lower:]' | sort | uniq -d)
+        if [ -n "$dupes" ]; then
+          echo "::error::Asset names collide case-insensitively: $dupes"
+          exit 1
+        fi
         ls -l dist
 
     - name: Resolve release notes
