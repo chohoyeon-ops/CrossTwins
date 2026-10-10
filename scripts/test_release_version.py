@@ -1,4 +1,7 @@
 import unittest
+from pathlib import Path
+import subprocess
+import sys
 
 from release_version import asset_name, firmware_version, resolve_release
 
@@ -25,7 +28,7 @@ class ReleaseVersionTests(unittest.TestCase):
                 self.assertEqual(firmware_version(release, BASE, SHA), "1.6.5-rc+9986adb")
 
     def test_cross_twins_tags_map_to_internal_versions_and_assets(self):
-        for counter in (1, 2):
+        for counter in (1, 2, 3):
             tag = f"v1.6.5-ct.{counter}"
             with self.subTest(tag=tag):
                 release = resolve_release(tag, BASE, prerelease=True)
@@ -57,7 +60,6 @@ class ReleaseVersionTests(unittest.TestCase):
             ("v1.6.5-rc.1", True),
             ("V1.6.5-ct.1", True),
             ("vv1.6.5-ct.1", True),
-            ("v1.6.5-ct.1", False),
             ("v1.6.5rc", False),
             ("v1.6.5", True),
         )
@@ -71,6 +73,28 @@ class ReleaseVersionTests(unittest.TestCase):
             asset_name(release, "unknown")
         with self.assertRaises(ValueError):
             firmware_version(release, BASE, "not-a-sha")
+
+    def test_cross_twins_stable_publication_keeps_suffix_and_asset(self):
+        for prerelease in (False, True):
+            with self.subTest(prerelease=prerelease):
+                release = resolve_release("v1.6.5-ct.3", BASE, prerelease)
+                self.assertEqual(firmware_version(release, BASE, SHA), "1.6.5-ct.3+9986adb")
+                self.assertEqual(asset_name(release, "x3-x4"), "crosspoint-1.6.5-ct.3-x3-x4.bin")
+                result = subprocess.run(
+                    [sys.executable, str(Path(__file__).with_name("release_version.py")),
+                     "--tag", "v1.6.5-ct.3", "--base-version", BASE,
+                     "--prerelease", str(prerelease).lower(), "--device", "x3-x4"],
+                    check=True, capture_output=True, text=True,
+                )
+                self.assertIn("firmware_suffix=-ct.3", result.stdout.splitlines())
+                self.assertIn("asset_name=crosspoint-1.6.5-ct.3-x3-x4.bin", result.stdout.splitlines())
+
+    def test_release_workflow_selects_environment_from_tag_suffix(self):
+        workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/release.yml").read_text()
+        expression = "steps.validate.outputs.firmware_suffix != '' && matrix.rc_env || matrix.release_env"
+        self.assertEqual(workflow.count(expression), 3)
+        self.assertNotIn("github.event.release.prerelease && matrix.rc_env", workflow)
+        self.assertNotIn("--clobber", workflow)
 
 
 if __name__ == "__main__":

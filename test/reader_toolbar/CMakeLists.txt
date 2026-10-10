@@ -1,0 +1,15 @@
+production_slice(PANEL_HEIGHT_CONSTANTS src/activities/reader/ReaderToolbarUi.cpp
+  "constexpr int kPanelHeightPercent" "}  // namespace")
+production_slice(PANEL_GEOMETRY src/activities/reader/ReaderToolbarUi.cpp
+  "  const int16_t titleH =" "  // No blanket side inset")
+file(READ "${REPO_ROOT}/src/activities/reader/ReaderToolbarUi.cpp" toolbar)
+foreach(wiring "listProps_.rowGap = rowGap;" "nav_.syncToProps(listRect, listProps_.rowHeight, rowGap, count, listProps_);")
+  string(FIND "${toolbar}" "${wiring}" position)
+  if(position LESS 0)
+    message(FATAL_ERROR "Toolbar list and navigation must use the geometry row gap")
+  endif()
+endforeach()
+configure_file(ReaderToolbarTest.cpp.in ReaderToolbarTest.cpp @ONLY)
+add_executable(ReaderToolbarTest "${CMAKE_CURRENT_BINARY_DIR}/ReaderToolbarTest.cpp")
+target_link_libraries(ReaderToolbarTest PRIVATE crosspoint_test_common GTest::gtest_main)
+gtest_discover_tests(ReaderToolbarTest)

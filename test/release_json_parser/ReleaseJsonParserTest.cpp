@@ -657,13 +657,93 @@ std::string crossTwinsRelease(const std::string& tag, const std::string& publish
   char generatedName[96]{};
   makeX3X4AssetName(tag.c_str(), generatedName, sizeof(generatedName));
   const std::string name = assetName.empty() ? generatedName : assetName;
-  return "{\"assets\":[{\"size\":4269216,\"browser_download_url\":\"https://github.com/chohoyeon-ops/CrossTwins/"
+  return "{\"assets\":[{\"size\":4269216,\"browser_download_url\":\"https://github.com/meat-holic/CrossTwins/"
          "releases/download/" +
          tag + "/" + name + "\",\"name\":\"" + name + "\"}],\"tag_name\":\"" + tag + "\",\"published_at\":\"" +
          published + "\",\"draft\":" + (draft ? "true" : "false") +
          ",\"prerelease\":" + (prerelease ? "true" : "false") + "}";
 }
 }  // namespace
+
+TEST(CrossTwinsReleaseList, RenamedRepositoryAcceptsExactCt3Asset) {
+  EXPECT_STREQ(cross_twins::firmwareRepository, "meat-holic/CrossTwins");
+  const auto body = "[" + crossTwinsRelease("v1.6.5-ct.3", "2026-10-11T01:58:11Z", false) + "]";
+  ReleaseListParser p;
+  ASSERT_TRUE(p.feed(body.data(), body.size()));
+  ASSERT_TRUE(p.finishPage());
+  EXPECT_TRUE(p.foundFirmware());
+  EXPECT_FALSE(p.hasRejectedFirmwareUrl());
+  EXPECT_STREQ(
+      p.getFirmwareUrl(),
+      "https://github.com/meat-holic/CrossTwins/releases/download/v1.6.5-ct.3/crosspoint-1.6.5-ct.3-x3-x4.bin");
+}
+TEST(CrossTwinsReleaseList, RejectedUrlIsDistinctFromMissingFirmware) {
+  for (const char* url :
+       {"https://github.com/chohoyeon-ops/CrossTwins/releases/download/v1.6.5-ct.3/crosspoint-1.6.5-ct.3-x3-x4.bin",
+        "https://github.com/other/CrossTwins/releases/download/v1.6.5-ct.3/crosspoint-1.6.5-ct.3-x3-x4.bin",
+        "https://github.com/meat-holic/Other/releases/download/v1.6.5-ct.3/crosspoint-1.6.5-ct.3-x3-x4.bin",
+        "http://github.com/meat-holic/CrossTwins/releases/download/v1.6.5-ct.3/crosspoint-1.6.5-ct.3-x3-x4.bin",
+        "https://github.com.evil.example/meat-holic/CrossTwins/releases/download/v1.6.5-ct.3/"
+        "crosspoint-1.6.5-ct.3-x3-x4.bin",
+        "https://github.com/meat-holic/CrossTwins/releases/download/v1.6.5-ct.2/crosspoint-1.6.5-ct.3-x3-x4.bin",
+        "https://github.com/meat-holic/CrossTwins/releases/download/v1.6.5-ct.3/crosspoint-1.6.5-ct.3-x3-x4.bin?x=1"}) {
+    auto body = "[" + crossTwinsRelease("v1.6.5-ct.3", "2026-10-11T01:58:11Z") + "]";
+    const auto start = body.find("https://github.com/");
+    body.replace(start, body.find('"', start) - start, url);
+    ReleaseListParser p;
+    ASSERT_TRUE(p.feed(body.data(), body.size()));
+    ASSERT_TRUE(p.finishPage());
+    EXPECT_TRUE(p.foundRelease());
+    EXPECT_FALSE(p.foundFirmware()) << url;
+    EXPECT_TRUE(p.hasRejectedFirmwareUrl()) << url;
+  }
+}
+TEST(CrossTwinsReleaseList, UrlRejectionFollowsSelectedReleaseAcrossPages) {
+  auto rejected = "[" + crossTwinsRelease("v1.6.5-ct.2", "2026-10-10T01:58:11Z") + "]";
+  rejected.replace(rejected.find("meat-holic"), strlen("meat-holic"), "chohoyeon-ops");
+  const auto accepted = "[" + crossTwinsRelease("v1.6.5-ct.3", "2026-10-11T01:58:11Z") + "]";
+  ReleaseListParser p;
+  ASSERT_TRUE(p.feed(rejected.data(), rejected.size()));
+  ASSERT_TRUE(p.finishPage());
+  EXPECT_TRUE(p.hasRejectedFirmwareUrl());
+  p.beginPage();
+  ASSERT_TRUE(p.feed(accepted.data(), accepted.size()));
+  ASSERT_TRUE(p.finishPage());
+  EXPECT_TRUE(p.foundFirmware());
+  EXPECT_FALSE(p.hasRejectedFirmwareUrl());
+  p.beginPage();
+  ASSERT_TRUE(p.feed(rejected.data(), rejected.size()));
+  ASSERT_TRUE(p.finishPage());
+  EXPECT_TRUE(p.foundFirmware());
+  EXPECT_FALSE(p.hasRejectedFirmwareUrl());
+}
+TEST(CrossTwinsReleaseList, NewestRejectedUrlNeverFallsBackToOlderFirmware) {
+  auto rejected = crossTwinsRelease("v1.6.5-ct.3", "2026-10-11T01:58:11Z");
+  rejected.replace(rejected.find("meat-holic"), strlen("meat-holic"), "chohoyeon-ops");
+  const auto body = "[" + crossTwinsRelease("v1.6.5-ct.2", "2026-10-10T01:58:11Z") + "," + rejected + "]";
+  ReleaseListParser p;
+  ASSERT_TRUE(p.feed(body.data(), body.size()));
+  ASSERT_TRUE(p.finishPage());
+  EXPECT_STREQ(p.getTagName(), "v1.6.5-ct.3");
+  EXPECT_FALSE(p.foundFirmware());
+  EXPECT_TRUE(p.hasRejectedFirmwareUrl());
+}
+TEST(CrossTwinsReleaseList, EmptyFirmwareUrlIsMalformedResponse) {
+  auto body = "[" + crossTwinsRelease("v1.6.5-ct.3", "2026-10-11T01:58:11Z") + "]";
+  const auto start = body.find("https://github.com/");
+  body.erase(start, body.find('"', start) - start);
+  ReleaseListParser p;
+  EXPECT_FALSE(p.feed(body.data(), body.size()) && p.finishPage());
+}
+TEST(CrossTwinsFirmwareVersion, OtaTestBuildIsBelowCt3AndEqualToCt2) {
+  EXPECT_EQ(compareFirmwareVersions("v1.6.5-ct.3", "1.6.5-ct.2+ota-test"), FirmwareVersionOrder::Newer);
+  EXPECT_EQ(compareFirmwareVersions("v1.6.5-ct.2", "1.6.5-ct.2+ota-test"), FirmwareVersionOrder::Equal);
+  EXPECT_EQ(compareFirmwareVersions("v1.6.5-ct.3", "1.6.5-ct.3+abc1234"), FirmwareVersionOrder::Equal);
+  EXPECT_EQ(compareFirmwareVersions("v1.6.5-ct.3", "1.6.5-dev-master-108ac7b"), FirmwareVersionOrder::Older);
+  char name[96]{};
+  ASSERT_TRUE(makeX3X4AssetName("v1.6.5-ct.3+abc1234", name, sizeof(name)));
+  EXPECT_STREQ(name, "crosspoint-1.6.5-ct.3-x3-x4.bin");
+}
 
 TEST(CrossTwinsReleaseList, SelectsMostRecentlyPublishedStableOrPrereleaseExcludesDraft) {
   const std::string body = "[" + crossTwinsRelease("v1.7.0", "2026-10-09T01:58:11Z", false) + "," +
@@ -677,7 +757,7 @@ TEST(CrossTwinsReleaseList, SelectsMostRecentlyPublishedStableOrPrereleaseExclud
   ASSERT_TRUE(p.foundFirmware());
   EXPECT_STREQ(
       p.getFirmwareUrl(),
-      "https://github.com/chohoyeon-ops/CrossTwins/releases/download/v1.6.5-ct.1/crosspoint-1.6.5-ct.1-x3-x4.bin");
+      "https://github.com/meat-holic/CrossTwins/releases/download/v1.6.5-ct.1/crosspoint-1.6.5-ct.1-x3-x4.bin");
   EXPECT_EQ(p.getFirmwareSize(), 4269216u);
 }
 TEST(CrossTwinsReleaseList, StableCanBeNewest) {
@@ -770,6 +850,7 @@ TEST(CrossTwinsReleaseList, NoFallbackWhenNewestReleaseLacksAsset) {
   ASSERT_TRUE(p.finishPage());
   EXPECT_STREQ(p.getTagName(), "v1.6.5-ct.2");
   EXPECT_FALSE(p.foundFirmware());
+  EXPECT_FALSE(p.hasRejectedFirmwareUrl());
 }
 TEST(CrossTwinsReleaseList, EveryChunkBoundaryAndLongIgnoredBody) {
   auto body = "[" + crossTwinsRelease("v1.6.5-ct.1", "2026-10-10T01:58:11Z") + "]";

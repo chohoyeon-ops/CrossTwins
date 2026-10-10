@@ -5,6 +5,10 @@
 
 #include "StreamingJsonParser.h"
 
+namespace cross_twins {
+inline constexpr char firmwareRepository[] = "meat-holic/CrossTwins";
+}
+
 class ReleaseJsonParser {
  public:
   ReleaseJsonParser();
@@ -123,6 +127,7 @@ class ReleaseListParser {
   size_t pageCount() const { return count; }
   bool foundRelease() const { return selected.tag[0] != '\0'; }
   bool foundFirmware() const { return selected.validAsset; }
+  bool hasRejectedFirmwareUrl() const { return selected.rejectedUrl; }
   const char* getTagName() const { return selected.tag; }
   const char* getFirmwareUrl() const { return selected.asset.url; }
   size_t getFirmwareSize() const { return selected.asset.size; }
@@ -142,6 +147,7 @@ class ReleaseListParser {
     uint8_t fields = 0;
     Asset asset{};
     bool validAsset = false;
+    bool rejectedUrl = false;
     bool multipleAssets = false;
   };
   static void onKey(void*, const char*, size_t);

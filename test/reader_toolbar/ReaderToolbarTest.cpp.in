@@ -1,0 +1,58 @@
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <cstdint>
+
+namespace {
+@PANEL_HEIGHT_CONSTANTS@
+constexpr int16_t kToolRowH = 80;
+struct Tokens {
+  struct { int font = 0; } titleText;
+  int16_t rowHeight = 48;
+  int16_t listRowGap = 4;
+  int16_t listTouchRowGap = 12;
+  int16_t spaceMd = 12;
+  int16_t spaceSm = 8;
+};
+struct UITheme {
+  struct { int listRowHeight = 48; } metrics;
+  static UITheme& getInstance() { static UITheme theme; return theme; }
+  const auto& getMetrics() const { return metrics; }
+};
+struct Screen {
+  int height = 0;
+  struct Target { int16_t lineHeight(int) const { return 24; } };
+  Target target() const { return {}; }
+  template<class Props> void sheet(const Props&, int16_t h) { height = h; }
+};
+int panelHeight(int width, int height, int items, bool denseRows) {
+  Tokens tokens;
+  const struct { int width, height; } safe{width, height};
+  const struct { bool denseRows; int itemCount; } model_{denseRows, items};
+  const struct { int grabberMargin = 12, grabberHeight = 4, grabberInset = 12; } sheetProps;
+  Screen screen;
+@PANEL_GEOMETRY@
+  return screen.height;
+}
+}  // namespace
+
+TEST(ReaderToolbarGeometry, LandscapeUsesMoreOfTheShortOrientedHeight) {
+  EXPECT_EQ(panelHeight(480, 800, 20, true), 520);
+  EXPECT_EQ(panelHeight(800, 480, 20, true), 416);
+  EXPECT_LE(panelHeight(800, 480, 20, true), 480 * 88 / 100);
+  EXPECT_GT(panelHeight(800, 480, 20, true), panelHeight(480, 480, 20, true));
+}
+TEST(ReaderToolbarGeometry, SmallListsShrinkToTheirActualRowCount) {
+  EXPECT_EQ(panelHeight(800, 480, 1, true), 208);
+  EXPECT_EQ(panelHeight(800, 480, 2, true), 260);
+  EXPECT_EQ(panelHeight(480, 800, 1, true), panelHeight(800, 480, 1, true));
+}
+TEST(ReaderToolbarGeometry, TouchGapIsUsedConsistentlyWhileDenseRowsKeepTheirGap) {
+  EXPECT_EQ(panelHeight(800, 480, 2, false), 268);
+  EXPECT_EQ(panelHeight(800, 480, 2, true), 260);
+}
+TEST(ReaderToolbarGeometry, ReducedSafeAreaStillFitsOneRowAndChrome) {
+  EXPECT_EQ(panelHeight(600, 300, 20, true), 260);
+  // Empty lists keep the available sheet geometry, as before this port.
+  EXPECT_EQ(panelHeight(600, 300, 0, true), 260);
+}

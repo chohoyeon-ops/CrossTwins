@@ -36,8 +36,7 @@ def resolve_release(tag: str, base_version: str, prerelease: bool) -> ReleaseVer
 
     match = re.fullmatch(re.escape(base_version) + r"-ct\.([1-9][0-9]*)", version)
     if match:
-        if not prerelease:
-            raise ValueError("CrossTwins ct tag must be marked as a prerelease")
+        # GitHub publication status is independent of the ct identifier in SemVer.
         return ReleaseVersion(version, f"-ct.{match.group(1)}")
 
     raise ValueError(f"tag {tag!r} does not match base version {base_version!r}")
@@ -53,7 +52,7 @@ def firmware_version(release: ReleaseVersion, base_version: str, short_sha: str)
     if not release.firmware_suffix:
         return base_version
     if not re.fullmatch(r"[0-9a-f]{7}", short_sha):
-        raise ValueError("prerelease firmware requires a seven-character lowercase commit SHA")
+        raise ValueError("suffixed firmware requires a seven-character lowercase commit SHA")
     return f"{base_version}{release.firmware_suffix}+{short_sha}"
 
 

@@ -10,6 +10,7 @@
 #include "Epub.h"
 #include "LibraryBuilder.h"
 #include "LibraryIndexFile.h"
+#include "LibraryText.h"
 
 using namespace library;
 
@@ -60,6 +61,121 @@ TEST_F(LibraryBuilderTest, UnchangedRebuildReusesMetadataAndDoesNotReplaceIndex)
   EXPECT_EQ(stats.metadataReused, 2);
   EXPECT_FALSE(stats.indexReplaced);
   EXPECT_EQ(fake::files[INDEX]->bytes, old);
+}
+
+namespace {
+// A structurally valid ct.2 index: v3 title folds and physical title order,
+// nontrivial discovery counters, and the original metadata/path blobs.
+void installFold3Fixture() {
+  LibraryIndexFile index;
+  ASSERT_TRUE(index.open(INDEX));
+  ClixHeader header = index.header();
+  ClixRecord a{}, b{};
+  for (uint16_t i = 0; i < index.bookCount(); ++i) {
+    ClixRecord record{};
+    std::string path;
+    ASSERT_TRUE(index.readRecord(i, record));
+    ASSERT_TRUE(index.readPath(record, path));
+    if (path == "/a.epub") a = record;
+    if (path == "/b.epub") b = record;
+  }
+  index.close();
+  header.foldVersion = 3;
+  header.nextFirstSeen = 100;
+  a.firstSeen = 42;
+  b.firstSeen = 77;
+  std::memset(a.fold, 0, sizeof(a.fold));
+  std::memset(b.fold, 0, sizeof(b.fold));
+  std::memcpy(a.fold, "iliad", 5);
+  std::memcpy(b.fold, "miserables", 10);
+  a.foldLen = 5;
+  b.foldLen = 10;
+  auto& bytes = fake::files[INDEX]->bytes;
+  std::memcpy(bytes.data(), &header, sizeof(header));
+  std::memcpy(bytes.data() + recordOffset(header, 0), &a, sizeof(a));
+  std::memcpy(bytes.data() + recordOffset(header, 1), &b, sizeof(b));
+  for (uint16_t row = 0; row < 2; ++row) {
+    std::memcpy(bytes.data() + authorOrderOffset(header, row), &row, sizeof(row));
+    std::memcpy(bytes.data() + arrivalOrderOffset(header, row), &row, sizeof(row));
+  }
+}
+}  // namespace
+
+TEST_F(LibraryBuilderTest, Fold3MigrationPreservesFirstSeenAndRebuildsTitleSearchKeys) {
+  bookMetadata["/a.epub"].title = "The Iliad";
+  bookMetadata["/b.epub"].title = "Les Misérables";
+  initial();
+  installFold3Fixture();
+  LibraryIndexFile index;
+  EXPECT_FALSE(index.open(INDEX));
+  EXPECT_EQ(index.validity(), ClixValidity::StaleFoldVersion);
+  ASSERT_TRUE(index.openForReconciliation(INDEX));
+  EXPECT_EQ(pathAt(index, SortOrder::TitleAsc, 0), "/a.epub");
+  index.close();
+  fake::add("/c.epub");
+  bookMetadata["/c.epub"].title = "I, Robot";
+  fake::parses = 0;
+  ASSERT_TRUE(buildLibraryIndex("/", stats, true));
+  EXPECT_EQ(fake::parses, 3u);
+  EXPECT_EQ(stats.metadataReused, 0u);
+  ASSERT_TRUE(index.open(INDEX));
+  EXPECT_EQ(index.header().foldVersion, 4);
+  EXPECT_EQ(index.header().nextFirstSeen, 101);
+  EXPECT_EQ(pathAt(index, SortOrder::TitleAsc, 0), "/c.epub");
+  EXPECT_EQ(pathAt(index, SortOrder::TitleAsc, 1), "/b.epub");
+  EXPECT_EQ(pathAt(index, SortOrder::TitleAsc, 2), "/a.epub");
+  EXPECT_EQ(pathAt(index, SortOrder::TitleDesc, 0), "/a.epub");
+  EXPECT_EQ(pathAt(index, SortOrder::RecentAsc, 0), "/a.epub");
+  EXPECT_EQ(pathAt(index, SortOrder::RecentAsc, 1), "/b.epub");
+  EXPECT_EQ(pathAt(index, SortOrder::RecentAsc, 2), "/c.epub");
+  for (uint16_t i = 0; i < index.bookCount(); ++i) {
+    ClixRecord record{};
+    std::string path;
+    ASSERT_TRUE(index.readRecord(i, record));
+    ASSERT_TRUE(index.readPath(record, path));
+    const std::string_view key(record.fold, record.foldLen);
+    if (path == "/a.epub") {
+      EXPECT_EQ(record.firstSeen, 42);
+      EXPECT_TRUE(matchesQuery(key, fold("The Iliad")));
+      EXPECT_TRUE(matchesQuery(key, fold("the")));
+      EXPECT_TRUE(matchesQuery(key, fold("Iliad")));
+    } else if (path == "/b.epub") {
+      EXPECT_EQ(record.firstSeen, 77);
+      EXPECT_TRUE(matchesQuery(key, fold("Les Misérables")));
+    } else {
+      EXPECT_EQ(path, "/c.epub");
+      EXPECT_EQ(record.firstSeen, 100);
+      EXPECT_TRUE(matchesQuery(key, fold("I Robot")));
+      EXPECT_FALSE(matchesQuery(key, fold("The")));
+    }
+  }
+  index.close();
+  ASSERT_TRUE(buildLibraryIndex("/", stats, true));
+  EXPECT_FALSE(stats.indexReplaced);
+  EXPECT_EQ(stats.metadataReused, 3u);
+}
+
+TEST_F(LibraryBuilderTest, FailedFold3MigrationPreservesOldIndexAndRetriesDiscoveryCounters) {
+  bookMetadata["/a.epub"].title = "The Iliad";
+  bookMetadata["/b.epub"].title = "Les Misérables";
+  initial();
+  installFold3Fixture();
+  const auto old = fake::files[INDEX]->bytes;
+  fake::failRename = 1;  // Fail new -> idx after idx -> backup; restore the old file.
+  EXPECT_FALSE(buildLibraryIndex("/", stats, true));
+  ASSERT_TRUE(fake::files.count(INDEX));
+  EXPECT_EQ(fake::files[INDEX]->bytes, old);
+  ASSERT_TRUE(buildLibraryIndex("/", stats, true));
+  LibraryIndexFile index;
+  ASSERT_TRUE(index.open(INDEX));
+  EXPECT_EQ(index.header().nextFirstSeen, 100);
+  for (uint16_t i = 0; i < index.bookCount(); ++i) {
+    ClixRecord record{};
+    std::string path;
+    ASSERT_TRUE(index.readRecord(i, record));
+    ASSERT_TRUE(index.readPath(record, path));
+    EXPECT_EQ(record.firstSeen, path == "/a.epub" ? 42 : 77);
+  }
 }
 
 TEST_F(LibraryBuilderTest, FolderHeavyUnchangedReconciliationIoScalesLinearly) {

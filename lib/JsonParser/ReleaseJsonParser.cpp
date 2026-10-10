@@ -680,11 +680,12 @@ void ReleaseListParser::commitRelease() {
     current.validAsset = false;
   if (current.validAsset) {
     char expectedUrl[512]{};
-    const int len =
-        snprintf(expectedUrl, sizeof(expectedUrl),
-                 "https://github.com/chohoyeon-ops/CrossTwins/releases/download/%s/%s", current.tag, expected);
-    if (len < 0 || static_cast<size_t>(len) >= sizeof(expectedUrl) || strcmp(expectedUrl, current.asset.url))
+    const int len = snprintf(expectedUrl, sizeof(expectedUrl), "https://github.com/%s/releases/download/%s/%s",
+                             cross_twins::firmwareRepository, current.tag, expected);
+    if (len < 0 || static_cast<size_t>(len) >= sizeof(expectedUrl) || strcmp(expectedUrl, current.asset.url)) {
       current.validAsset = false;
+      current.rejectedUrl = true;
+    }
   }
   const int timeOrder = strcmp(current.published, selected.published);
   if (!selected.tag[0] || timeOrder > 0 || (timeOrder == 0 && strcmp(current.tag, selected.tag) > 0))

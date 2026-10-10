@@ -20,7 +20,6 @@
 #include "FirmwareFlasher.h"
 
 namespace {
-constexpr char releasesUrl[] = "https://api.github.com/repos/chohoyeon-ops/CrossTwins/releases";
 constexpr size_t RELEASES_PER_PAGE = 100;
 constexpr unsigned MAX_RELEASE_PAGES = 10;
 constexpr size_t MAX_RELEASE_PAGE_BYTES = 2 * 1024 * 1024;
@@ -46,7 +45,8 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   bool allPagesRead = false;
   for (unsigned page = 1; page <= MAX_RELEASE_PAGES; ++page) {
     char url[160]{};
-    snprintf(url, sizeof(url), "%s?per_page=%zu&page=%u", releasesUrl, RELEASES_PER_PAGE, page);
+    snprintf(url, sizeof(url), "https://api.github.com/repos/%s/releases?per_page=%zu&page=%u",
+             cross_twins::firmwareRepository, RELEASES_PER_PAGE, page);
     releases->beginPage();
     size_t received = 0;
     bool invalidResponse = false;
@@ -81,6 +81,10 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
     return JSON_PARSE_ERROR;
   }
   if (!releases->foundRelease()) return NO_UPDATE;
+  if (releases->hasRejectedFirmwareUrl()) {
+    LOG_ERR("OTA", "Rejected firmware asset URL in release: %s", releases->getTagName());
+    return ASSET_URL_ERROR;
+  }
   const auto order = compareFirmwareVersions(releases->getTagName(), CROSSPOINT_VERSION);
   if (order == FirmwareVersionOrder::Invalid) {
     LOG_ERR("OTA", "Cannot compare firmware versions: %s / %s", releases->getTagName(), CROSSPOINT_VERSION);

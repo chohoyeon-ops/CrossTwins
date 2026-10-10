@@ -73,7 +73,7 @@ jobs:
 
       - name: Pin pioarduino core inside the platform penv
         env:
-          PIO_ENV: ${{ github.event.release.prerelease && matrix.rc_env || matrix.release_env }}
+          PIO_ENV: ${{ steps.validate.outputs.firmware_suffix != '' && matrix.rc_env || matrix.release_env }}
         run: |
           set -euo pipefail
           # Envs with custom_sdkconfig run a nested `pio run` from
@@ -85,14 +85,14 @@ jobs:
 
       - name: Build CrossPoint
         env:
-          PIO_ENV: ${{ github.event.release.prerelease && matrix.rc_env || matrix.release_env }}
+          PIO_ENV: ${{ steps.validate.outputs.firmware_suffix != '' && matrix.rc_env || matrix.release_env }}
           CROSSPOINT_RC_SUFFIX: ${{ steps.validate.outputs.firmware_suffix }}
         run: CROSSPOINT_RC_HASH="$(git rev-parse --short=7 HEAD)" pio run -e "$PIO_ENV" -j1
 
       - name: Prepare firmware asset
         id: asset
         env:
-          PIO_ENV: ${{ github.event.release.prerelease && matrix.rc_env || matrix.release_env }}
+          PIO_ENV: ${{ steps.validate.outputs.firmware_suffix != '' && matrix.rc_env || matrix.release_env }}
           ASSET_NAME: ${{ steps.validate.outputs.asset_name }}
         run: |
           cp ".pio/build/${PIO_ENV}/firmware.bin" "$ASSET_NAME"
@@ -131,4 +131,4 @@ jobs:
           done
           test "$(find dist -maxdepth 1 -type f -name 'crosspoint-*.bin' | wc -l)" -eq 5
           gh release upload "$RELEASE_TAG" dist/crosspoint-*.bin \
-            --repo "$GITHUB_REPOSITORY" --clobber
+            --repo "$GITHUB_REPOSITORY"
