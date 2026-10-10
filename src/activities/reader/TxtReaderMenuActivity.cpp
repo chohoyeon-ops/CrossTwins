@@ -46,8 +46,6 @@ void TxtReaderMenuActivity::onEnter() {
   requestUpdate();
 }
 
-void TxtReaderMenuActivity::onExit() { Activity::onExit(); }
-
 void TxtReaderMenuActivity::loop() {
   buttonNavigator.onNext([this] {
     selectedIndex = ButtonNavigator::nextIndex(selectedIndex, static_cast<int>(menuItems.size()));

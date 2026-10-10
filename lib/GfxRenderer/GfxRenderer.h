@@ -159,10 +159,10 @@ class GfxRenderer {
   // build UnifiedFontFamily resolves fallback glyphs per glyph and SD .epdfont glyphs stay
   // resident, so there is nothing to prewarm: these are no-ops kept for upstream call sites.
   using TextGetter = const char* (*)(const void* ctx, uint32_t index);
-  void prewarmFallbackText(int /*fontId*/, TextGetter /*getter*/, const void* /*ctx*/, uint32_t /*textCount*/,
-                           EpdFontFamily::Style /*style*/ = EpdFontFamily::REGULAR) const {}
-  void prewarmFallbackText(int /*fontId*/, const char* /*text*/,
-                           EpdFontFamily::Style /*style*/ = EpdFontFamily::REGULAR) const {}
+  static void prewarmFallbackText(int /*fontId*/, TextGetter /*getter*/, const void* /*ctx*/, uint32_t /*textCount*/,
+                                  EpdFontFamily::Style /*style*/ = EpdFontFamily::REGULAR) {}
+  static void prewarmFallbackText(int /*fontId*/, const char* /*text*/,
+                                  EpdFontFamily::Style /*style*/ = EpdFontFamily::REGULAR) {}
   bool isFontCacheScanning() const;
   const std::map<int, UnifiedFontSlot>& getFontMap() const { return fontMap; }
 

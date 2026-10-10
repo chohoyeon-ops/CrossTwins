@@ -34,6 +34,6 @@ class UnifiedFontSlot : public std::unique_ptr<UnifiedFontFamily> {
  public:
   using std::unique_ptr<UnifiedFontFamily>::unique_ptr;
   UnifiedFontSlot() = default;
-  UnifiedFontSlot(std::unique_ptr<UnifiedFontFamily>&& family)
+  explicit UnifiedFontSlot(std::unique_ptr<UnifiedFontFamily>&& family)
       : std::unique_ptr<UnifiedFontFamily>(std::move(family)) {}
 };

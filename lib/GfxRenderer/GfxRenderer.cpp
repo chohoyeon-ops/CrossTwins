@@ -114,11 +114,11 @@ void GfxRenderer::FrameBufferLoan::end() {
 bool GfxRenderer::isFontCacheScanning() const { return fontCacheManager_ && fontCacheManager_->isScanning(); }
 
 void GfxRenderer::insertFont(const int fontId, const EpdFontFamily* font) {
-  fontMap[fontId] = std::unique_ptr<UnifiedFontFamily>(new UnifiedFontFamily(font));
+  fontMap[fontId] = UnifiedFontSlot(std::unique_ptr<UnifiedFontFamily>(new UnifiedFontFamily(font)));
 }
 
 void GfxRenderer::insertSdFont(const int fontId, SdFontFamily* font) {
-  fontMap[fontId] = std::unique_ptr<UnifiedFontFamily>(new UnifiedFontFamily(font));
+  fontMap[fontId] = UnifiedFontSlot(std::unique_ptr<UnifiedFontFamily>(new UnifiedFontFamily(font)));
 }
 
 bool GfxRenderer::removeFont(const int fontId) {

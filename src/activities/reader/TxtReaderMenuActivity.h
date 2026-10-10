@@ -29,7 +29,6 @@ class TxtReaderMenuActivity final : public Activity {
                                  uint32_t totalReadingSeconds);
 
   void onEnter() override;
-  void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
   bool isReaderActivity() const override { return true; }

@@ -5,6 +5,7 @@
 #include <HardwareSerial.h>
 #include <Logging.h>
 
+#include <algorithm>
 #include <cstring>
 
 #include "CrossPointSettings.h"
@@ -16,6 +17,14 @@
 namespace {
 constexpr const char* DEFAULT_FONT_NAME = "KoPub 바탕 (기본)";
 constexpr const char* CACHE_DIR = "/.crosspoint/cache";
+
+// Index of `path` in `fontFiles`, or 0 (the built-in default entry) when it is not listed.
+int indexOfFont(const std::vector<std::string>& fontFiles, const char* path) {
+  if (fontFiles.size() < 2) return 0;
+  const auto it =
+      std::find_if(fontFiles.begin() + 1, fontFiles.end(), [path](const std::string& file) { return file == path; });
+  return it == fontFiles.end() ? 0 : static_cast<int>(it - fontFiles.begin());
+}
 
 // Recursively delete a directory and its contents
 void deleteDirectory(const char* path) {
@@ -169,12 +178,7 @@ void FontSelectionActivity::loadFontList() {
   const bool hasCurrent = isSystemTarget() ? SETTINGS.hasSystemFont() : SETTINGS.hasCustomFont();
   const char* currentPath = isSystemTarget() ? SETTINGS.systemFontPath : SETTINGS.customFontPath;
   if (hasCurrent) {
-    for (size_t i = 1; i < fontFiles.size(); i++) {
-      if (fontFiles[i] == currentPath) {
-        selectedIndex = static_cast<int>(i);
-        break;
-      }
-    }
+    selectedIndex = indexOfFont(fontFiles, currentPath);
   }
 }
 
@@ -317,12 +321,7 @@ void FontSelectionActivity::render() {
   const bool hasCurrent = isSystemTarget() ? SETTINGS.hasSystemFont() : SETTINGS.hasCustomFont();
   const char* currentPath = isSystemTarget() ? SETTINGS.systemFontPath : SETTINGS.customFontPath;
   if (hasCurrent) {
-    for (size_t i = 1; i < fontFiles.size(); i++) {
-      if (fontFiles[i] == currentPath) {
-        currentSelectedIndex = static_cast<int>(i);
-        break;
-      }
-    }
+    currentSelectedIndex = indexOfFont(fontFiles, currentPath);
   }
 
   // Draw font list
