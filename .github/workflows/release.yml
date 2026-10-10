@@ -1,59 +1,104 @@
-name: Compile Release
-
-# Build and attach firmware only after a release is published. The release tag
-# supplies both the source revision and the version in each asset name.
+name: Preflight Release (no publication)
 
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Canonical CrossTwins ct.3+ tag (need not exist)'
+        required: true
+        default: v1.6.5-ct.3
+        type: string
+      commit_sha:
+        description: 'Full 40-character SHA; must equal the workflow revision'
+        required: true
+        type: string
+      prerelease:
+        description: 'Regular release preparation only; must be false'
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 jobs:
-  build-release:
+  prepare:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - release_env: gh_release
-            rc_env: gh_release_rc
-            device: x3-x4
-          - release_env: sticky-gh_release
-            rc_env: sticky-gh_release_rc
-            device: sticky
-          - release_env: x4pro-gh_release
-            rc_env: x4pro-gh_release_rc
-            device: x4pro
-          - release_env: x4c-gh_release
-            rc_env: x4c-gh_release_rc
-            device: x4c
-          - release_env: papermono-gh_release
-            rc_env: papermono-gh_release_rc
-            device: papermono
+    outputs:
+      suffix: ${{ steps.contract.outputs.firmware_suffix }}
+      short_sha: ${{ steps.contract.outputs.short_sha }}
     steps:
+      - name: Reject mismatched revision before checkout
+        env:
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$COMMIT_SHA" = "$GITHUB_SHA"
+          test "$GITHUB_REPOSITORY" = meat-holic/CrossTwins
+          test "$PRERELEASE" = false
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ inputs.commit_sha }}
           submodules: recursive
-
+          persist-credentials: false
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
-
-      - name: Validate release version
-        id: validate
+      - name: Validate exact source and release contract
+        id: contract
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          PRERELEASE: ${{ inputs.prerelease }}
         run: |
-          configured_version="$(sed -n 's/^version = //p' platformio.ini | head -n1)"
-          python scripts/release_version.py \
-            --tag "$RELEASE_TAG" \
-            --base-version "$configured_version" \
-            --prerelease "${{ github.event.release.prerelease }}" \
-            --device "${{ matrix.device }}" >> "$GITHUB_OUTPUT"
+          python scripts/release_preflight.py prepare \
+            --repository "$GITHUB_REPOSITORY" --release-tag "$RELEASE_TAG" \
+            --commit-sha "$COMMIT_SHA" --workflow-sha "$GITHUB_SHA" \
+            --prerelease "$PRERELEASE" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" --output context.json >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: preflight-context-${{ github.run_id }}-${{ github.run_attempt }}
+          path: context.json
+          retention-days: 30
+          if-no-files-found: error
 
+  checks:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.commit_sha }}
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install formatter and host tools
+        run: |
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 21
+          sudo apt-get update
+          sudo apt-get install -y clang-format-21 cmake ninja-build libpcre3
+      - name: Check formatting
+        run: |
+          PATH="/usr/lib/llvm-21/bin:$PATH" ./bin/clang-format-fix
+          git diff --exit-code
+      - name: Release and preflight contracts
+        env:
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$COMMIT_SHA"
+          python -m unittest discover -s scripts -p 'test_release*.py'
+      - name: Full host and OTA regression
+        run: |
+          cmake -S test -B build/test -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/test -j2
+          ctest --test-dir build/test --output-on-failure -j1
+          ./build/test/release_json_parser/ReleaseJsonParserTest --gtest_filter='CrossTwins*'
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
@@ -71,64 +116,118 @@ jobs:
             "cryptography>=45.0.3" "certifi>=2025.8.3" "ecdsa>=0.19.1" "bitstring>=4.3.1" \
             "reedsolo>=1.5.3,<1.8" "esp-idf-size>=2.0.0" "esp-coredump>=1.14.0"
 
-      - name: Pin pioarduino core inside the platform penv
+      - name: Check cppcheck
+        run: pio check -e default --fail-on-defect low --fail-on-defect medium --fail-on-defect high
+
+  build-release:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - env: gh_release_rc
+            device: x3-x4
+          - env: sticky-gh_release_rc
+            device: sticky
+          - env: x4pro-gh_release_rc
+            device: x4pro
+          - env: x4c-gh_release_rc
+            device: x4c
+          - env: papermono-gh_release_rc
+            device: papermono
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.commit_sha }}
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v4
+        with:
+          name: preflight-context-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: false
+
+      - name: Install PlatformIO Core
+        run: |
+          uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip
+          # platform-espressif32's builder/main.py imports these unconditionally; its own
+          # penv bootstrap (builder/penv_setup.py) is supposed to install them automatically
+          # but isn't picking them up reliably in this runner image, so pin them explicitly.
+          uv pip install --system -U "littlefs-python>=0.16.0" "fatfs-ng>=0.1.14" "pyyaml>=6.0.2" \
+            "rich-click>=1.8.6" "zopfli>=0.2.2" "intelhex>=2.3.0" "rich>=14.0.0" "urllib3<2" \
+            "cryptography>=45.0.3" "certifi>=2025.8.3" "ecdsa>=0.19.1" "bitstring>=4.3.1" \
+            "reedsolo>=1.5.3,<1.8" "esp-idf-size>=2.0.0" "esp-coredump>=1.14.0"
+
+      - name: Pin existing pioarduino core
         env:
-          PIO_ENV: ${{ steps.validate.outputs.firmware_suffix != '' && matrix.rc_env || matrix.release_env }}
+          PIO_ENV: ${{ matrix.env }}
         run: |
           set -euo pipefail
-          # Envs with custom_sdkconfig run a nested `pio run` from
-          # ~/.platformio/penv. Keep that core on the same version as the outer core.
-          # See https://github.com/pioarduino/platform-espressif32/issues/529
           pio pkg install -e "$PIO_ENV"
           uv pip install --python ~/.platformio/penv/bin/python "pioarduino==6.1.19"
-          ~/.platformio/penv/bin/pio --version
-
-      - name: Build CrossPoint
+      - name: Build and validate release image
         env:
-          PIO_ENV: ${{ steps.validate.outputs.firmware_suffix != '' && matrix.rc_env || matrix.release_env }}
-          CROSSPOINT_RC_SUFFIX: ${{ steps.validate.outputs.firmware_suffix }}
-        run: CROSSPOINT_RC_HASH="$(git rev-parse --short=7 HEAD)" pio run -e "$PIO_ENV" -j1
-
-      - name: Prepare firmware asset
-        id: asset
-        env:
-          PIO_ENV: ${{ steps.validate.outputs.firmware_suffix != '' && matrix.rc_env || matrix.release_env }}
-          ASSET_NAME: ${{ steps.validate.outputs.asset_name }}
+          PIO_ENV: ${{ matrix.env }}
+          DEVICE: ${{ matrix.device }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          CROSSPOINT_RC_SUFFIX: ${{ needs.prepare.outputs.suffix }}
+          CROSSPOINT_RC_HASH: ${{ needs.prepare.outputs.short_sha }}
         run: |
-          cp ".pio/build/${PIO_ENV}/firmware.bin" "$ASSET_NAME"
-          echo "name=$ASSET_NAME" >> "$GITHUB_OUTPUT"
-
-      - name: Stage firmware asset
-        uses: actions/upload-artifact@v6
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$COMMIT_SHA"
+          asset="$(python scripts/release_version.py --tag "$RELEASE_TAG" --base-version \
+            "$(sed -n 's/^version = //p' platformio.ini | head -n1)" --prerelease false \
+            --device "$DEVICE" | sed -n 's/^asset_name=//p')"
+          test -n "$asset"
+          pio run -e "$PIO_ENV" -j1
+          mkdir staged
+          cp ".pio/build/$PIO_ENV/firmware.bin" "staged/$asset"
+          python scripts/release_preflight.py validate --context context.json \
+            --device "$DEVICE" --environment "$PIO_ENV" --binary "staged/$asset" \
+            --elf ".pio/build/$PIO_ENV/firmware.elf" \
+            --partitions ".pio/build/$PIO_ENV/partitions.bin" --partition-csv partitions.csv \
+            --output "staged/$DEVICE.json"
+      - uses: actions/upload-artifact@v6
         with:
-          name: ${{ steps.asset.outputs.name }}
-          path: ${{ steps.asset.outputs.name }}
-          if-no-files-found: error
-          retention-days: 1
+          name: verified-${{ matrix.device }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: staged/*
+          retention-days: 30
           compression-level: 0
+          if-no-files-found: error
 
-  publish-release:
-    needs: build-release
+  seal:
+    needs: [prepare, checks, build-release]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
-      - name: Download firmware assets
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v6
         with:
-          path: dist
-          pattern: crosspoint-*.bin
+          ref: ${{ inputs.commit_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v4
+        with:
+          name: preflight-context-${{ github.run_id }}-${{ github.run_attempt }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: verified-*-${{ github.run_id }}-${{ github.run_attempt }}
           merge-multiple: true
-
-      - name: Attach firmware assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: |
-          version="${RELEASE_TAG#v}"
-          for device in x3-x4 sticky x4pro x4c papermono; do
-            test -f "dist/crosspoint-${version}-${device}.bin"
-          done
-          test "$(find dist -maxdepth 1 -type f -name 'crosspoint-*.bin' | wc -l)" -eq 5
-          gh release upload "$RELEASE_TAG" dist/crosspoint-*.bin \
-            --repo "$GITHUB_REPOSITORY"
+          path: bundle
+      - name: Seal all five verified raw binaries
+        run: python scripts/release_preflight.py seal --context context.json --directory bundle --output bundle/manifest.json
+      - uses: actions/upload-artifact@v6
+        with:
+          name: cross-twins-release-verified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: bundle/*
+          retention-days: 30
+          compression-level: 0
+          if-no-files-found: error

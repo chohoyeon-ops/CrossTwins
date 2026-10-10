@@ -89,10 +89,15 @@ class ReleaseVersionTests(unittest.TestCase):
                 self.assertIn("firmware_suffix=-ct.3", result.stdout.splitlines())
                 self.assertIn("asset_name=crosspoint-1.6.5-ct.3-x3-x4.bin", result.stdout.splitlines())
 
-    def test_release_workflow_selects_environment_from_tag_suffix(self):
+    def test_release_workflow_is_build_only_and_uses_resolved_suffix(self):
         workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/release.yml").read_text()
-        expression = "steps.validate.outputs.firmware_suffix != '' && matrix.rc_env || matrix.release_env"
-        self.assertEqual(workflow.count(expression), 3)
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertNotIn("types: [published]", workflow)
+        self.assertIn("CROSSPOINT_RC_SUFFIX: ${{ needs.prepare.outputs.suffix }}", workflow)
+        self.assertIn("needs: [prepare, checks, build-release]", workflow)
+        self.assertIn("contents: read", workflow)
+        self.assertNotIn("contents: write", workflow)
+        self.assertNotIn("gh release", workflow)
         self.assertNotIn("github.event.release.prerelease && matrix.rc_env", workflow)
         self.assertNotIn("--clobber", workflow)
 
