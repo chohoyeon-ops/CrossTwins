@@ -650,3 +650,227 @@ TEST(ReleaseJsonParser, ChunkedRealisticEveryBoundary) {
     EXPECT_EQ(p.getFirmwareSize(), 9999u) << "split=" << split;
   }
 }
+
+namespace {
+std::string crossTwinsRelease(const std::string& tag, const std::string& published, bool prerelease = true,
+                              bool draft = false, const std::string& assetName = "") {
+  char generatedName[96]{};
+  makeX3X4AssetName(tag.c_str(), generatedName, sizeof(generatedName));
+  const std::string name = assetName.empty() ? generatedName : assetName;
+  return "{\"assets\":[{\"size\":4269216,\"browser_download_url\":\"https://github.com/chohoyeon-ops/CrossTwins/"
+         "releases/download/" +
+         tag + "/" + name + "\",\"name\":\"" + name + "\"}],\"tag_name\":\"" + tag + "\",\"published_at\":\"" +
+         published + "\",\"draft\":" + (draft ? "true" : "false") +
+         ",\"prerelease\":" + (prerelease ? "true" : "false") + "}";
+}
+}  // namespace
+
+TEST(CrossTwinsReleaseList, SelectsMostRecentlyPublishedStableOrPrereleaseExcludesDraft) {
+  const std::string body = "[" + crossTwinsRelease("v1.7.0", "2026-10-09T01:58:11Z", false) + "," +
+                           crossTwinsRelease("v9.0.0", "2026-10-11T01:58:11Z", false, true) + "," +
+                           crossTwinsRelease("v1.6.5-ct.1", "2026-10-10T01:58:11Z") + "]";
+  ReleaseListParser p;
+  ASSERT_TRUE(p.feed(body.data(), body.size()));
+  ASSERT_TRUE(p.finishPage());
+  EXPECT_EQ(p.pageCount(), 3u);
+  EXPECT_STREQ(p.getTagName(), "v1.6.5-ct.1");
+  ASSERT_TRUE(p.foundFirmware());
+  EXPECT_STREQ(
+      p.getFirmwareUrl(),
+      "https://github.com/chohoyeon-ops/CrossTwins/releases/download/v1.6.5-ct.1/crosspoint-1.6.5-ct.1-x3-x4.bin");
+  EXPECT_EQ(p.getFirmwareSize(), 4269216u);
+}
+TEST(CrossTwinsReleaseList, StableCanBeNewest) {
+  const auto body = "[" + crossTwinsRelease("v1.6.5-ct.2", "2026-10-09T01:58:11Z") + "," +
+                    crossTwinsRelease("v1.6.5", "2026-10-10T01:58:11Z", false) + "]";
+  ReleaseListParser p;
+  ASSERT_TRUE(p.feed(body.data(), body.size()));
+  ASSERT_TRUE(p.finishPage());
+  EXPECT_STREQ(p.getTagName(), "v1.6.5");
+}
+TEST(CrossTwinsReleaseList, SelectionPersistsAcrossPages) {
+  ReleaseListParser p;
+  for (const auto& body : {"[" + crossTwinsRelease("v1.6.5-ct.1", "2026-10-09T01:58:11Z") + "]",
+                           "[" + crossTwinsRelease("v1.6.5-ct.2", "2026-10-10T01:58:11Z") + "]", std::string("[]")}) {
+    p.beginPage();
+    ASSERT_TRUE(p.feed(body.data(), body.size()));
+    ASSERT_TRUE(p.finishPage());
+  }
+  EXPECT_EQ(p.pageCount(), 0u);
+  EXPECT_STREQ(p.getTagName(), "v1.6.5-ct.2");
+}
+TEST(CrossTwinsReleaseList, EmptyAndDraftOnlyHaveNoRelease) {
+  for (const auto& body : {std::string("[]"), std::string("[{\"draft\":true,\"published_at\":null}]")}) {
+    ReleaseListParser p;
+    ASSERT_TRUE(p.feed(body.data(), body.size()));
+    ASSERT_TRUE(p.finishPage());
+    EXPECT_FALSE(p.foundRelease());
+  }
+}
+TEST(CrossTwinsReleaseList, RejectsMalformedAndWrongShapeResponses) {
+  for (const char* body : {"",
+                           " ",
+                           "{}",
+                           "{\"message\":\"API rate limit exceeded\"}",
+                           "<html>error</html>",
+                           "[",
+                           "[{}",
+                           "[]garbage",
+                           "[][]",
+                           "[null]",
+                           "[true]",
+                           "[1]",
+                           "[[]]",
+                           "[{\"draft\":false,}]",
+                           "[{\"draft\":false \"tag_name\":\"v1.0.0\"}]",
+                           "[{\"draft\":false]}",
+                           "[{\"draft\":tru}]",
+                           "[{\"draft\":01}]",
+                           "[{\"draft\":false,\"ignored\":1e}]",
+                           "[{\"draft\":false,\"ignored\":\"\\q\"}]",
+                           "[{\"draft\":false,\"ignored\":\"\\uXYZ0\"}]",
+                           "[{\"draft\":false,\"ignored\":\"\n\"}]",
+                           "[{\"draft\":false,\"draft\":true}]",
+                           "[{\"draft\":\"false\"}]"}) {
+    ReleaseListParser p;
+    const bool fed = p.feed(body, strlen(body));
+    EXPECT_FALSE(fed && p.finishPage()) << body;
+  }
+}
+TEST(CrossTwinsReleaseList, MissingOrInvalidPublicationIsNotSkippedToOlderRelease) {
+  for (const auto& date : {"", "2026-02-30T01:00:00Z", "2026-13-01T01:00:00Z", "2026-01-01T24:00:00Z", "yesterday"}) {
+    const auto body = "[" + crossTwinsRelease("v1.6.5-ct.1", "2026-10-09T01:58:11Z") + "," +
+                      crossTwinsRelease("v1.6.5-ct.2", date) + "]";
+    ReleaseListParser p;
+    EXPECT_FALSE(p.feed(body.data(), body.size()) && p.finishPage()) << date;
+  }
+}
+TEST(CrossTwinsReleaseList, OnlyExactCombinedAssetAndRepositoryUrlAccepted) {
+  for (const auto& name :
+       {"crosspoint-1.6.5-ct.1-x4pro.bin", "crosspoint-1.6.5-ct.1-sticky.bin", "crosspoint-1.6.5-ct.1-x3-x4-merged.bin",
+        "crosspoint-v1.6.5-ct.1-x3-x4.bin", "crosspoint-1.6.4-x3-x4.bin", "firmware.bin"}) {
+    const auto body = "[" + crossTwinsRelease("v1.6.5-ct.1", "2026-10-10T01:58:11Z", true, false, name) + "]";
+    ReleaseListParser p;
+    ASSERT_TRUE(p.feed(body.data(), body.size()));
+    ASSERT_TRUE(p.finishPage());
+    EXPECT_FALSE(p.foundFirmware()) << name;
+  }
+  auto body = "[" + crossTwinsRelease("v1.6.5-ct.1", "2026-10-10T01:58:11Z") + "]";
+  body.replace(body.find("https://github.com/"), strlen("https://github.com/"), "http://evil.example/");
+  ReleaseListParser p;
+  ASSERT_TRUE(p.feed(body.data(), body.size()));
+  ASSERT_TRUE(p.finishPage());
+  EXPECT_FALSE(p.foundFirmware());
+}
+TEST(CrossTwinsReleaseList, NoFallbackWhenNewestReleaseLacksAsset) {
+  const auto body = "[" + crossTwinsRelease("v1.6.5-ct.1", "2026-10-09T01:58:11Z") + "," +
+                    crossTwinsRelease("v1.6.5-ct.2", "2026-10-10T01:58:11Z", true, false, "firmware.bin") + "]";
+  ReleaseListParser p;
+  ASSERT_TRUE(p.feed(body.data(), body.size()));
+  ASSERT_TRUE(p.finishPage());
+  EXPECT_STREQ(p.getTagName(), "v1.6.5-ct.2");
+  EXPECT_FALSE(p.foundFirmware());
+}
+TEST(CrossTwinsReleaseList, EveryChunkBoundaryAndLongIgnoredBody) {
+  auto body = "[" + crossTwinsRelease("v1.6.5-ct.1", "2026-10-10T01:58:11Z") + "]";
+  body.insert(2, "\"body\":\"" + std::string(4096, 'x') + "\\n\\uAC00\",");
+  for (size_t split = 0; split <= body.size(); ++split) {
+    ReleaseListParser p;
+    ASSERT_TRUE(p.feed(body.data(), split)) << split;
+    ASSERT_TRUE(p.feed(body.data() + split, body.size() - split)) << split;
+    ASSERT_TRUE(p.finishPage()) << split;
+    ASSERT_TRUE(p.foundFirmware()) << split;
+  }
+}
+TEST(CrossTwinsReleaseList, TruncatedDocumentNeverCompletes) {
+  const auto body = "[" + crossTwinsRelease("v1.6.5-ct.1", "2026-10-10T01:58:11Z") + "]";
+  for (size_t len = 0; len < body.size(); ++len) {
+    ReleaseListParser p;
+    p.feed(body.data(), len);
+    EXPECT_FALSE(p.finishPage()) << len;
+  }
+}
+TEST(CrossTwinsReleaseList, RejectsOverlongCriticalFieldAndDuplicateField) {
+  for (const auto& tag : {std::string(64, 'x'), std::string(600, 'x')}) {
+    const auto body = "[{\"tag_name\":\"" + tag + "\",\"draft\":true}]";
+    ReleaseListParser p;
+    EXPECT_FALSE(p.feed(body.data(), body.size()) && p.finishPage());
+  }
+  auto body = "[" + crossTwinsRelease("v1.6.5-ct.1", "2026-10-10T01:58:11Z") + "]";
+  body.insert(2, "\"tag_name\":\"v1.0.0\",");
+  ReleaseListParser p;
+  EXPECT_FALSE(p.feed(body.data(), body.size()) && p.finishPage());
+}
+TEST(CrossTwinsFirmwareVersion, SameReleaseBuildMetadataNeverReinstalls) {
+  for (const char* current : {"1.6.5-ct.1", "1.6.5-ct.1+325dc82", "v1.6.5-ct.1+other.SHA"})
+    EXPECT_EQ(compareFirmwareVersions("v1.6.5-ct.1", current), FirmwareVersionOrder::Equal);
+  EXPECT_EQ(compareFirmwareVersions("v1.6.5+new", "1.6.5+old"), FirmwareVersionOrder::Equal);
+}
+TEST(CrossTwinsFirmwareVersion, SemanticOrdering) {
+  for (const auto& pair : {std::pair{"v1.6.5-ct.2", "1.6.5-ct.1+SHA"},
+                           {"1.6.5-ct.10", "1.6.5-ct.9"},
+                           {"1.6.5", "1.6.5-ct.2"},
+                           {"1.6.6-ct.1", "1.6.5"},
+                           {"2.0.0", "1.99.99"},
+                           {"1.7.0", "1.6.99"},
+                           {"1.6.5-rc.2", "1.6.5-rc.1"},
+                           {"1.6.5-rc.1", "1.6.5-rc"},
+                           {"1.6.5-rc", "1.6.5-ct.1"},
+                           {"1.6.5-beta", "1.6.5-1"},
+                           {"999999999999999999999.0.0", "99999999999999999999.0.0"}}) {
+    EXPECT_EQ(compareFirmwareVersions(pair.first, pair.second), FirmwareVersionOrder::Newer);
+    EXPECT_EQ(compareFirmwareVersions(pair.second, pair.first), FirmwareVersionOrder::Older);
+  }
+  EXPECT_EQ(compareFirmwareVersions("1.6.5-ct.1", "1.6.5"), FirmwareVersionOrder::Older);
+  EXPECT_EQ(compareFirmwareVersions("1.6.5-ct.1", "1.6.5-dev-master-325dc82"), FirmwareVersionOrder::Older);
+}
+TEST(CrossTwinsFirmwareVersion, InvalidInputsAreIncomparable) {
+  for (const char* bad : {"", "v", "garbage", "1.6", "1.6.5rc", "01.6.5", "1.6.5.1", "1.6.5-", "1.6.5-ct.01",
+                          "1.6.5-ct..1", "1.6.5+", "1.6.5+bad/SHA", "1.6.5+SHA+SHA", " 1.6.5"}) {
+    EXPECT_EQ(compareFirmwareVersions(bad, "1.6.5"), FirmwareVersionOrder::Invalid) << bad;
+    EXPECT_EQ(compareFirmwareVersions("1.6.5", bad), FirmwareVersionOrder::Invalid) << bad;
+  }
+}
+TEST(CrossTwinsFirmwareVersion, AssetVersionStripsVAndBuildMetadata) {
+  char name[96]{};
+  ASSERT_TRUE(makeX3X4AssetName("v1.6.5-ct.1+325dc82", name, sizeof(name)));
+  EXPECT_STREQ(name, "crosspoint-1.6.5-ct.1-x3-x4.bin");
+  ASSERT_TRUE(makeX3X4AssetName("1.6.5", name, sizeof(name)));
+  EXPECT_STREQ(name, "crosspoint-1.6.5-x3-x4.bin");
+  EXPECT_FALSE(makeX3X4AssetName("v1.6.5-ct.1", name, 8));
+  EXPECT_FALSE(makeX3X4AssetName("../1.6.5", name, sizeof(name)));
+}
+TEST(CrossTwinsReleaseList, RejectsNonObjectAssetEntries) {
+  for (const char* entry : {"null", "false", "42", "\"bad\"", "[]"}) {
+    auto body = "[" + crossTwinsRelease("v1.6.5-ct.1", "2026-10-10T01:58:11Z") + "]";
+    body.insert(body.find("[", body.find("assets")) + 1, std::string(entry) + ",");
+    ReleaseListParser p;
+    EXPECT_FALSE(p.feed(body.data(), body.size()) && p.finishPage()) << entry;
+  }
+}
+TEST(CrossTwinsReleaseList, DuplicateCombinedAssetsAreNotInstallable) {
+  auto body = "[" + crossTwinsRelease("v1.6.5-ct.1", "2026-10-10T01:58:11Z") + "]";
+  const size_t start = body.find("{", body.find("assets"));
+  const size_t end = body.find("}", start);
+  const auto duplicate = body.substr(start, end - start + 1);
+  body.insert(end + 1, "," + duplicate);
+  ReleaseListParser p;
+  ASSERT_TRUE(p.feed(body.data(), body.size()));
+  ASSERT_TRUE(p.finishPage());
+  EXPECT_FALSE(p.foundFirmware());
+}
+TEST(CrossTwinsReleaseList, InvalidSizeAndMissingRequiredMetadataAreRejected) {
+  const auto original = "[" + crossTwinsRelease("v1.6.5-ct.1", "2026-10-10T01:58:11Z") + "]";
+  for (const char* size : {"-1", "1.5", "1e6", "18446744073709551616"}) {
+    auto body = original;
+    body.replace(body.find("4269216"), 7, size);
+    ReleaseListParser p;
+    EXPECT_FALSE(p.feed(body.data(), body.size()) && p.finishPage()) << size;
+  }
+  for (const char* field : {"draft", "prerelease", "tag_name", "published_at", "assets"}) {
+    auto body = original;
+    body.replace(body.find(field), strlen(field), "ignored_field");
+    ReleaseListParser p;
+    EXPECT_FALSE(p.feed(body.data(), body.size()) && p.finishPage()) << field;
+  }
+}

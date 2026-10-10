@@ -6,6 +6,7 @@
 // the local header last and break the build.
 #include "HttpDownloader.h"
 #include <Logging.h>
+#include <Memory.h>
 #include <ReleaseJsonParser.h>
 #include <esp_ota_ops.h>
 #include <esp_wifi.h>
@@ -19,113 +20,88 @@
 #include "FirmwareFlasher.h"
 
 namespace {
-constexpr char latestReleaseUrl[] = "https://api.github.com/repos/crosspoint-reader/crosspoint-reader/releases/latest";
+constexpr char releasesUrl[] = "https://api.github.com/repos/chohoyeon-ops/CrossTwins/releases";
+constexpr size_t RELEASES_PER_PAGE = 100;
+constexpr unsigned MAX_RELEASE_PAGES = 10;
+constexpr size_t MAX_RELEASE_PAGE_BYTES = 2 * 1024 * 1024;
 }  // namespace
 
 OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
-  LOG_DBG("OTA", "Checking for update (current: %s)", CROSSPOINT_VERSION);
+  updateAvailable = false;
+  latestVersion.clear();
+  otaUrl.clear();
+  otaSize = totalSize = 0;
+  LOG_DBG("OTA", "Checking CrossTwins releases (current: %s)", CROSSPOINT_VERSION);
 
-  // Stream the ~32KB release JSON straight into the parser as it arrives.
-  // Buffering the whole body in a std::string would add a growing allocation
-  // on top of the TLS session's heap during the fetch; with -fno-exceptions an
-  // OOM there aborts. fetchUrl handles the verified-https GET, redirects, and
-  // User-Agent (see HttpDownloader).
-  ReleaseJsonParser releaseParser;
-  releaseParser.setFirmwareAssetName("");
-  // Each board updates from crosspoint-<version>-<device>.bin. The combined
-  // C3 image uses x3-x4; other asset suffixes match their firmware board tag.
-  const bool isX4 = board_tag::boardNameLen() == 2 && memcmp(board_tag::boardName(), "x4", 2) == 0;
-  char assetSuffix[20] = "-x3-x4";
-  if (!isX4) {
-    snprintf(assetSuffix, sizeof(assetSuffix), "-%.*s", static_cast<int>(board_tag::boardNameLen()),
-             board_tag::boardName());
+  // This OTA path selects the combined X3/X4 application; other boards are excluded.
+  if (board_tag::boardNameLen() != 2 || memcmp(board_tag::boardName(), "x4", 2) != 0) return NO_UPDATE;
+
+  // Fixed-size state (~3KB) is kept off the activity task stack. Stream large
+  // release bodies; never retain the whole API response alongside TLS buffers.
+  auto releases = makeUniqueNoThrow<ReleaseListParser>();
+  if (!releases) {
+    LOG_ERR("OTA", "OOM allocating release parser");
+    return OOM_ERROR;
   }
-  char assetName[48] = {};
-  bool assetNameSet = false;
-  const bool ok = HttpDownloader::fetchUrl(latestReleaseUrl, [&](const uint8_t* data, size_t len) {
-    size_t offset = 0;
-    while (!assetNameSet && offset < len) {
-      releaseParser.feed(reinterpret_cast<const char*>(data + offset), 1);
-      offset++;
-      if (releaseParser.foundTag()) {
-        snprintf(assetName, sizeof(assetName), "crosspoint-%s%s.bin", releaseParser.getTagName(), assetSuffix);
-        releaseParser.setFirmwareAssetName(assetName);
-        assetNameSet = true;
+  bool allPagesRead = false;
+  for (unsigned page = 1; page <= MAX_RELEASE_PAGES; ++page) {
+    char url[160]{};
+    snprintf(url, sizeof(url), "%s?per_page=%zu&page=%u", releasesUrl, RELEASES_PER_PAGE, page);
+    releases->beginPage();
+    size_t received = 0;
+    bool invalidResponse = false;
+    const bool ok = HttpDownloader::fetchUrl(url, [&](const uint8_t* data, size_t len) {
+      if (len > MAX_RELEASE_PAGE_BYTES - received) {
+        invalidResponse = true;
+        return false;
       }
+      received += len;
+      if (!releases->feed(reinterpret_cast<const char*>(data), len)) {
+        invalidResponse = true;
+        return false;
+      }
+      return true;
+    });
+    if (invalidResponse || (ok && !releases->finishPage())) {
+      LOG_ERR("OTA", "Invalid or oversized release response on page %u", page);
+      return JSON_PARSE_ERROR;
     }
-    if (offset < len) releaseParser.feed(reinterpret_cast<const char*>(data + offset), len - offset);
-    return true;
-  });
-  if (!ok) {
-    LOG_ERR("OTA", "Release check fetch failed");
-    return HTTP_ERROR;
+    if (!ok) {
+      LOG_ERR("OTA", "Release check fetch failed on page %u", page);
+      return HTTP_ERROR;
+    }
+    if (releases->pageCount() < RELEASES_PER_PAGE) {
+      allPagesRead = true;
+      break;
+    }
   }
-
-  LOG_DBG("OTA", "Parser results: tag=%s firmware=%s", releaseParser.foundTag() ? "yes" : "no",
-          releaseParser.foundFirmware() ? "yes" : "no");
-
-  if (!releaseParser.foundTag()) {
-    LOG_ERR("OTA", "No tag_name in release JSON");
+  // Never claim to have selected the latest release from a truncated history.
+  if (!allPagesRead) {
+    LOG_ERR("OTA", "Release history exceeds bounded pagination");
     return JSON_PARSE_ERROR;
   }
-
-  if (!releaseParser.foundFirmware()) {
-    LOG_INF("OTA", "No %s asset in latest release", assetName);
+  if (!releases->foundRelease()) return NO_UPDATE;
+  const auto order = compareFirmwareVersions(releases->getTagName(), CROSSPOINT_VERSION);
+  if (order == FirmwareVersionOrder::Invalid) {
+    LOG_ERR("OTA", "Cannot compare firmware versions: %s / %s", releases->getTagName(), CROSSPOINT_VERSION);
+    return JSON_PARSE_ERROR;
+  }
+  if (!releases->foundFirmware()) {
+    LOG_INF("OTA", "No unambiguous X3/X4 asset in latest published release: %s", releases->getTagName());
     return NO_UPDATE;
   }
-
-  latestVersion = releaseParser.getTagName();
-  otaUrl = releaseParser.getFirmwareUrl();
-  otaSize = releaseParser.getFirmwareSize();
+  latestVersion = releases->getTagName();
+  otaUrl = releases->getFirmwareUrl();
+  otaSize = releases->getFirmwareSize();
   totalSize = otaSize;
   updateAvailable = true;
-
-  LOG_DBG("OTA", "Found update: tag=%s size=%zu", latestVersion.c_str(), otaSize);
-  LOG_DBG("OTA", "Firmware URL: %s", otaUrl.c_str());
+  LOG_DBG("OTA", "Found CrossTwins release: tag=%s size=%zu", latestVersion.c_str(), otaSize);
   return OK;
 }
 
 bool OtaUpdater::isUpdateNewer() const {
-  if (!updateAvailable || latestVersion.empty() || latestVersion == CROSSPOINT_VERSION) {
-    return false;
-  }
-
-  int currentMajor, currentMinor, currentPatch;
-  int latestMajor, latestMinor, latestPatch;
-
-  const auto currentVersion = CROSSPOINT_VERSION;
-
-  // semantic version check (only match on 3 segments)
-  sscanf(latestVersion.c_str(), "%d.%d.%d", &latestMajor, &latestMinor, &latestPatch);
-  sscanf(currentVersion, "%d.%d.%d", &currentMajor, &currentMinor, &currentPatch);
-
-  /*
-   * Compare major versions.
-   * If they differ, return true if latest major version greater than current major version
-   * otherwise return false.
-   */
-  if (latestMajor != currentMajor) return latestMajor > currentMajor;
-
-  /*
-   * Compare minor versions.
-   * If they differ, return true if latest minor version greater than current minor version
-   * otherwise return false.
-   */
-  if (latestMinor != currentMinor) return latestMinor > currentMinor;
-
-  /*
-   * Check patch versions.
-   */
-  if (latestPatch != currentPatch) return latestPatch > currentPatch;
-
-  // If we reach here, it means all segments are equal.
-  // One final check, if we're on an RC build (contains "-rc"), we should consider the latest version as newer even if
-  // the segments are equal, since RC builds are pre-release versions.
-  if (strstr(currentVersion, "-rc") != nullptr) {
-    return true;
-  }
-
-  return false;
+  return updateAvailable &&
+         compareFirmwareVersions(latestVersion.c_str(), CROSSPOINT_VERSION) == FirmwareVersionOrder::Newer;
 }
 
 const std::string& OtaUpdater::getLatestVersion() const { return latestVersion; }
