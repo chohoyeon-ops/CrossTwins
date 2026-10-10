@@ -38,21 +38,21 @@ jobs:
           ref: ${{ github.event.release.tag_name }}
           submodules: recursive
 
-      - name: Validate release version
-        env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: |
-          version="${RELEASE_TAG#v}"
-          configured_version="$(sed -n 's/^version = //p' platformio.ini | head -n1)"
-          if [ "${{ github.event.release.prerelease }}" = "true" ]; then
-            test "$version" = "${configured_version}rc"
-          else
-            test "$version" = "$configured_version"
-          fi
-
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
+
+      - name: Validate release version
+        id: validate
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          configured_version="$(sed -n 's/^version = //p' platformio.ini | head -n1)"
+          python scripts/release_version.py \
+            --tag "$RELEASE_TAG" \
+            --base-version "$configured_version" \
+            --prerelease "${{ github.event.release.prerelease }}" \
+            --device "${{ matrix.device }}" >> "$GITHUB_OUTPUT"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -86,18 +86,17 @@ jobs:
       - name: Build CrossPoint
         env:
           PIO_ENV: ${{ github.event.release.prerelease && matrix.rc_env || matrix.release_env }}
+          CROSSPOINT_RC_SUFFIX: ${{ steps.validate.outputs.firmware_suffix }}
         run: CROSSPOINT_RC_HASH="$(git rev-parse --short=7 HEAD)" pio run -e "$PIO_ENV" -j1
 
       - name: Prepare firmware asset
         id: asset
         env:
           PIO_ENV: ${{ github.event.release.prerelease && matrix.rc_env || matrix.release_env }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          ASSET_NAME: ${{ steps.validate.outputs.asset_name }}
         run: |
-          version="${RELEASE_TAG#v}"
-          asset="crosspoint-${version}-${{ matrix.device }}.bin"
-          cp ".pio/build/${PIO_ENV}/firmware.bin" "$asset"
-          echo "name=$asset" >> "$GITHUB_OUTPUT"
+          cp ".pio/build/${PIO_ENV}/firmware.bin" "$ASSET_NAME"
+          echo "name=$ASSET_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Stage firmware asset
         uses: actions/upload-artifact@v6

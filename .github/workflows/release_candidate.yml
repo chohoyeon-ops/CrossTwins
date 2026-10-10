@@ -71,6 +71,7 @@ jobs:
       - name: Build CrossPoint Release Candidate
         env:
           CROSSPOINT_RC_HASH: ${{ env.SHORT_SHA }}
+          CROSSPOINT_RC_SUFFIX: -rc
         run: pio run -e ${{ matrix.pio_env }} -j1
 
       - name: Name release asset

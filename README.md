@@ -52,9 +52,18 @@ X3와 X4에서는 직접 작동을 확인했습니다. 나머지 기기는 펌�
 
 ## 참고 및 주의사항
 
-CrossTwins는 CrossPoint-KO의 소스코드를 그대로 이식한 펌웨어가 아닙니다. KO 포크의 아이디어와 설계 철학을 참고하여 최신 CrossPoint 코드베이스에서 독립적으로 구현한 개인 포크입니다.
+CrossTwins는 CrossPoint 1.6.5 기반의 독립 커뮤니티 포크입니다. CrossPoint-KO의 소스코드를 그대로 이식한 펌웨어가 아니며, KO 포크의 아이디어와 설계 철학을 참고해 한국어 사용자 경험을 구현합니다.
 
-현재 첫 프리뷰 버전이므로 예상하지 못한 오류가 발생할 수 있습니다. CrossTwins 전용 OTA 업데이트 경로는 추후 정비할 예정입니다.
+### 최초 시험판: v1.6.5-ct.1
+
+[GitHub Releases](https://github.com/chohoyeon-ops/CrossTwins/releases)에서 기기에 맞는 firmware asset을 받으세요.
+
+- XTeink X3와 X4는 공용 ESP32-C3 이미지 `crosspoint-1.6.5-ct.1-x3-x4.bin`을 사용합니다.
+- X4C, X4 Pro, Sticky, Paper Mono용 빌드도 제공되지만, 현재 실기기 동작을 확인한 기기는 X3와 X4뿐입니다. 다른 기기에서는 해당 모델의 asset만 사용하고 시험판으로 취급해 주세요.
+- 설치 전에 기존 firmware와 SD 카드 데이터를 백업하세요.
+- 시험판에는 예상하지 못한 오류가 있을 수 있습니다. 문제를 보고할 때 기기 모델, firmware version, asset 이름과 재현 방법을 알려 주세요.
+
+CrossTwins 전용 OTA 배포는 아직 지원하지 않습니다. 현재 기기의 OTA 확인 기능은 공식 CrossPoint Release를 조회합니다. OTA 화면에 업데이트가 표시되면 CrossTwins용으로 간주하지 말고 취소하세요. CrossTwins OTA와 firmware 전환 기능은 별도 작업으로 정비할 예정입니다.
 
 ## Credits
 
