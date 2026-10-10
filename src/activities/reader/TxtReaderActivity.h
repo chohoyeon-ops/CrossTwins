@@ -50,8 +50,8 @@ class TxtReaderActivity final : public ReaderActivity {
 
   void renderPage(GfxRenderer& renderer);
   void persistVisibleCheckpoint();
-  void initializeReader(GfxRenderer& renderer);
-  void updateLayoutIfChanged(GfxRenderer& renderer);
+  void initializeReader(const GfxRenderer& renderer);
+  void updateLayoutIfChanged(const GfxRenderer& renderer);
   void updateViewport(const GfxRenderer& renderer);
   void openReaderOptions();
   int estimatedTotalPages() const;

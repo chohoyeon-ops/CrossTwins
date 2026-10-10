@@ -53,6 +53,13 @@
 - 전체 clang-format wrapper 재실행에 추가 diff가 없고 `git diff --check` 및 기존 threshold의 cppcheck가 PASS다. `gh_release`/`gh_release_rc` 재빌드도 exit 0이며 ESP32-C3 header/checksum/validation hash가 유효하다. 최종 재검증은 이전 object cache를 재사용했다.
 - 승인된 source/test 10개 파일과 이 CI 복구 문서만 commit/push 대상이다. SDK gitlink, `.gitmodules`, PlatformIO/dependency, 검사 정책, 사용자 `AGENTS.md`와 `analysis/`는 변경·포함하지 않는다. 전체 복구 완료 판정은 이후 새 push의 GitHub CI 최종 SUCCESS를 확인한 뒤 내려야 한다. 실제 run URL과 전체 job 결과는 별도 iCloud 최종 보고서에 기록한다. Release/tag 작업은 실행하지 않는다.
 
+### 첫 push CI에서 확인한 const 호출 체인 보완
+
+- 첫 품질 검사 복구 commit `aea5c394`의 [CI run 38007734623](https://github.com/chohoyeon-ops/CrossTwins/actions/runs/38007734623)은 formatting, unit-tests 및 5개 firmware build를 모두 통과했지만 cppcheck와 집계 job이 실패했다.
+- 실제 cppcheck 로그는 `TxtReaderActivity.cpp:147,261`의 `initializeReader`, `updateLayoutIfChanged`에 동일한 `constParameterReference` 2건을 보고했다. `updateViewport`의 const 인자화에 따라 호출자도 const를 받을 수 있게 된 같은 style 진단이다. 로컬 Windows 검사는 이를 보고하지 않아 로컬 통과와 실제 CI를 구분했다.
+- 두 private nonvirtual 함수의 header/definition 인자만 `const GfxRenderer&`로 일치시켰다. renderer 사용은 const `updateViewport` 호출뿐이고 함수 body, 호출 관계 및 interface contract는 유지했다. suppression/threshold 변경 없이 같은 style 복구 범위에서 보완했다.
+- 보완 후 전체 Windows host tests 554/554 및 formatter/cppcheck가 다시 PASS다. 최종 firmware 재검증과 두 번째 push의 실제 CI 결과는 iCloud 완료 보고서에서 구분해 기록한다. 첫 run의 FAILURE를 삭제하거나 SUCCESS로 간주하지 않는다.
+
 ## Release 계약
 
 - 실행 이벤트는 `release.published`이다. 태그 push만으로 실행되지 않으며, workflow가 Release를 생성하지도 않는다. 사용자가 승인한 Release 게시가 먼저 필요하다.

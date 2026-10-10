@@ -144,7 +144,7 @@ void TxtReaderActivity::openReaderOptions() {
       });
 }
 
-void TxtReaderActivity::initializeReader(GfxRenderer& renderer) {
+void TxtReaderActivity::initializeReader(const GfxRenderer& renderer) {
   if (initialized) {
     return;
   }
@@ -258,7 +258,7 @@ void TxtReaderActivity::renderBook() {
   }
 }
 
-void TxtReaderActivity::updateLayoutIfChanged(GfxRenderer& renderer) {
+void TxtReaderActivity::updateLayoutIfChanged(const GfxRenderer& renderer) {
   if (!initialized) return;
 
   const size_t pageStartOffset = pageHistory.currentOffset();
