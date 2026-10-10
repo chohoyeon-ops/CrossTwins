@@ -1,4 +1,17 @@
 name: Compile Release
+
+# Korean fork release: pushing an X.Y.Z-ko.N tag builds the X3/X4 (ESP32-C3) `gh_release`
+# firmware and creates the GitHub release with its assets. Upstream builds five boards on
+# `release: published`; this fork only ships the X3/X4 image, so the other board envs
+# (sticky, x4pro, x4c, papermono) are intentionally not built here.
+#
+# Assets:
+#   firmware.bin                       - OTA asset for 1.5.x-ko devices (legacy name, keep)
+#   crosspoint-<tag>-x3-x4.bin         - OTA asset in upstream's per-board naming (#3493),
+#                                        looked up by 1.6.x-ko firmware
+#   CrossPoint-<tag>.bin               - merged full-flash image (bootloader+partitions+app)
+#   bootloader.bin, partitions.bin
+
 on:
   push:
     tags:
@@ -14,6 +27,15 @@ jobs:
     - uses: actions/checkout@v6
       with:
         submodules: recursive
+
+    - name: Validate release version
+      run: |
+        version="${GITHUB_REF_NAME#v}"
+        configured_version="$(sed -n 's/^version = //p' platformio.ini | head -n1)"
+        if [ "$version" != "$configured_version" ]; then
+          echo "::error::Tag $GITHUB_REF_NAME does not match platformio.ini version $configured_version"
+          exit 1
+        fi
 
     - uses: actions/cache@v5
       with:
@@ -33,14 +55,39 @@ jobs:
         enable-cache: false
 
     - name: Install PlatformIO Core
-      run: uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip esptool
-
-    - name: Set version from tag
       run: |
-        sed -i "s/^crosspoint_version = .*/crosspoint_version = ${{ github.ref_name }}/" platformio.ini
+        uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip esptool
+        # platform-espressif32's builder/main.py imports these unconditionally; its own
+        # penv bootstrap (builder/penv_setup.py) is supposed to install them automatically
+        # but isn't picking them up reliably in this runner image, so pin them explicitly.
+        uv pip install --system -U "littlefs-python>=0.16.0" "fatfs-ng>=0.1.14" "pyyaml>=6.0.2" \
+          "rich-click>=1.8.6" "zopfli>=0.2.2" "intelhex>=2.3.0" "rich>=14.0.0" "urllib3<2" \
+          "cryptography>=45.0.3" "certifi>=2025.8.3" "ecdsa>=0.19.1" "bitstring>=4.3.1" \
+          "reedsolo>=1.5.3,<1.8" "esp-idf-size>=2.0.0" "esp-coredump>=1.14.0"
+
+    - name: Pin pioarduino core inside the platform penv
+      run: |
+        set -euo pipefail
+        # Envs with custom_sdkconfig run a nested `pio run` from
+        # ~/.platformio/penv. Keep that core on the same version as the outer core.
+        # See https://github.com/pioarduino/platform-espressif32/issues/529
+        pio pkg install -e gh_release
+        uv pip install --python ~/.platformio/penv/bin/python "pioarduino==6.1.19"
+        ~/.platformio/penv/bin/pio --version
 
     - name: Build CrossPoint
-      run: pio run -e gh_release
+      run: pio run -e gh_release -j1
+
+    - name: Check firmware fits the stock OTA partition
+      run: |
+        # 0x640000 = stock Crosspoint OTA app slot (see docs/firmware-size-budget.md).
+        size=$(stat -c %s .pio/build/gh_release/firmware.bin)
+        limit=$((0x640000))
+        echo "firmware.bin: $size bytes (limit $limit)"
+        if [ "$size" -gt "$limit" ]; then
+          echo "::error::firmware.bin ($size) exceeds the stock OTA partition ($limit)"
+          exit 1
+        fi
 
     - name: Merge firmware binaries
       run: |
@@ -52,6 +99,11 @@ jobs:
           0x0 .pio/build/gh_release/bootloader.bin \
           0x8000 .pio/build/gh_release/partitions.bin \
           0x10000 .pio/build/gh_release/firmware.bin
+
+    - name: Prepare per-board OTA asset
+      run: |
+        version="${GITHUB_REF_NAME#v}"
+        cp .pio/build/gh_release/firmware.bin ".pio/build/gh_release/crosspoint-${version}-x3-x4.bin"
 
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
@@ -84,6 +136,7 @@ jobs:
         files: |
           .pio/build/gh_release/CrossPoint-${{ github.ref_name }}.bin
           .pio/build/gh_release/firmware.bin
+          .pio/build/gh_release/crosspoint-*-x3-x4.bin
           .pio/build/gh_release/bootloader.bin
           .pio/build/gh_release/partitions.bin
         body_path: ${{ steps.notes.outputs.path }}
