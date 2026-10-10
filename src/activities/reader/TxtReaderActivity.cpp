@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <iterator>
 #include <limits>
+#include <numeric>
 
 #include "CrossPointSettings.h"
 #include "EpubReaderMenuActivity.h"
@@ -109,8 +110,10 @@ void TxtReaderActivity::openReaderOptions() {
             {
               RenderLock lock(*this);
               if (currentPageLoaded) {
-                size_t needed = currentPageLines.empty() ? 0 : currentPageLines.size() - 1;
-                for (const auto& line : currentPageLines) needed += line.size();
+                const size_t needed =
+                    std::accumulate(currentPageLines.begin(), currentPageLines.end(),
+                                    currentPageLines.empty() ? size_t{0} : currentPageLines.size() - 1,
+                                    [](const size_t total, const std::string& line) { return total + line.size(); });
                 pageText.reserve(needed);
                 for (size_t i = 0; i < currentPageLines.size(); ++i) {
                   if (i > 0) pageText.push_back('\n');
@@ -177,7 +180,7 @@ void TxtReaderActivity::initializeReader(GfxRenderer& renderer) {
   initialized = true;
 }
 
-void TxtReaderActivity::updateViewport(GfxRenderer& renderer) {
+void TxtReaderActivity::updateViewport(const GfxRenderer& renderer) {
   renderer.getOrientedViewableTRBL(&cachedOrientedMarginTop, &cachedOrientedMarginRight, &cachedOrientedMarginBottom,
                                    &cachedOrientedMarginLeft);
   cachedOrientedMarginTop += cachedScreenMargin;

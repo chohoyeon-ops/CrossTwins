@@ -52,7 +52,7 @@ class TxtReaderActivity final : public ReaderActivity {
   void persistVisibleCheckpoint();
   void initializeReader(GfxRenderer& renderer);
   void updateLayoutIfChanged(GfxRenderer& renderer);
-  void updateViewport(GfxRenderer& renderer);
+  void updateViewport(const GfxRenderer& renderer);
   void openReaderOptions();
   int estimatedTotalPages() const;
   float estimatedProgressPercent() const;

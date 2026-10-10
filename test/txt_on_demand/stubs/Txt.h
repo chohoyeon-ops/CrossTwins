@@ -11,7 +11,7 @@
 class Txt {
  public:
   explicit Txt(std::string content, std::string path = "/books/book.txt",
-                std::string cachePath = "/.crosspoint/txt_test")
+               std::string cachePath = "/.crosspoint/txt_test")
       : content(std::move(content)), path(std::move(path)), cachePath(std::move(cachePath)) {}
 
   size_t getFileSize() const { return content.size(); }

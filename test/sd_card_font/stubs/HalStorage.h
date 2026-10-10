@@ -2,18 +2,17 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <cstring>
-#include <vector>
-#include <memory>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <memory>
+#include <vector>
 
 inline std::vector<uint8_t> sdFontTestFile;
 inline size_t sdFontTestReads = 0;
 inline bool sdFontTestReadFailure = false;
 inline bool sdFontTestOpenFailure = false;
 inline bool sdFontTestHandleFailure = false;
-
 
 struct SdFontTestEsp {
   size_t largestBlock = 200 * 1024;
@@ -30,6 +29,7 @@ class HalFile {
     ~State() { opened = false; }
   };
   std::unique_ptr<State> state;
+
  public:
   HalFile() = default;
   HalFile(const HalFile&) = delete;
@@ -52,7 +52,10 @@ class HalFile {
   bool isOpen() const { return state && state->opened; }
   explicit operator bool() const { return isOpen(); }
   void close() {
-    if (!state) { std::fputs("HalFile::close on empty owner\n", stderr); std::abort(); }
+    if (!state) {
+      std::fputs("HalFile::close on empty owner\n", stderr);
+      std::abort();
+    }
     state->opened = false;
   }
   void allocateOwner() { state = std::make_unique<State>(); }

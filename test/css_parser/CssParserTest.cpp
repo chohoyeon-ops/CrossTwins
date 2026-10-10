@@ -219,7 +219,7 @@ TEST_F(CssParserTest, FailedPromotionRestoresTheOnlyBackupCache) {
   ASSERT_FALSE(fs::exists(cacheFile()));
   ASSERT_EQ(loadCss(writer, ".replacement { font-style: italic; }\n"), CssParser::ParseResult::Complete);
 
-  Storage.failNextRename(cacheTempFile().string(), cacheFile().string());
+  Storage.failNextRename(cachePath() + "/css_rules.cache.tmp", cachePath() + "/css_rules.cache");
   EXPECT_FALSE(writer.saveToCache(true));
   EXPECT_TRUE(fs::exists(cacheFile()));
   EXPECT_FALSE(fs::exists(cacheTempFile()));

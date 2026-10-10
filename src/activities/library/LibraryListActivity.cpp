@@ -39,7 +39,7 @@ constexpr int AUTHOR_TAB = 2;
 constexpr int TAB_SLOTS = AUTHOR_TAB + 1;
 constexpr int8_t PROGRESS_NOT_LOADED = -2;
 
-void drawRecentProgress(GfxRenderer& renderer, fui::DrawTarget& target, const fui::Rect bar, const int percent) {
+void drawRecentProgress(const GfxRenderer& renderer, fui::DrawTarget& target, const fui::Rect bar, const int percent) {
   if (percent < 0 || bar.width < 3 || bar.height < 3) return;
   target.fill(bar, fui::Paint::solid(fui::Color::White));
   target.stroke(bar, fui::Paint::solid(fui::Color::Black), 1);

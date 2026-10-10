@@ -16,6 +16,7 @@ class HalFile {
   size_t position = 0;
   bool writable = false;
   bool open = false;
+
  public:
   HalFile() = default;
   HalFile(HalStorage* owner, std::string filePath, bool canWrite)
@@ -24,7 +25,10 @@ class HalFile {
   int read(void* buffer, size_t count);
   size_t write(const uint8_t* buffer, size_t count);
   void flush() {}
-  bool close() { open = false; return true; }
+  bool close() {
+    open = false;
+    return true;
+  }
 };
 
 class HalStorage {
@@ -38,7 +42,10 @@ class HalStorage {
   mutable std::string failNextExistsPath;
   size_t writeLimit = std::numeric_limits<size_t>::max();
 
-  static HalStorage& getInstance() { static HalStorage storage; return storage; }
+  static HalStorage& getInstance() {
+    static HalStorage storage;
+    return storage;
+  }
   void clear() {
     files.clear();
     failReadOpen = false;

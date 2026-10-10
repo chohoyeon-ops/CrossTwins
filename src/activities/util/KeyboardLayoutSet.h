@@ -2,6 +2,7 @@
 
 #include <FreeInkUI.h>
 #include <I18nKeys.h>
+
 #include <cstdint>
 
 namespace keyboard_layouts {

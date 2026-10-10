@@ -22,7 +22,36 @@
 - 이 새 dependency checkout에서 `gh_release`와 `gh_release_rc` 빌드가 모두 exit 0으로 성공했다. release는 4,269,296 bytes, RC는 4,269,344 bytes이다. ESP32-C3 header/checksum/validation hash와 compile-time version(`1.6.5`, `1.6.5-rc+f7111e8`)을 확인했다. 빌드 source 기준은 `f7111e805f422d5146a782f9fdf575600e8b62a5`에 미게시 dependency descriptor만 적용한 상태다.
 - 프로젝트 source/object/cache는 새 디렉터리를 사용했다. global PlatformIO toolchain과 tuned Arduino framework cache는 재사용했으므로 ESP-IDF descriptor의 과거 version/date를 현재 application version으로 간주하지 않는다. outer/penv Core는 모두 6.1.19로 확인했다.
 - firmware와 SHA-256 metadata는 고유한 `CrossTwins-SDK-CI-Recovery-20261009-223637-f7111e8` 폴더로 로컬 `C:\Codex\korean-artifacts`와 iCloud `CrossTwins\DeviceValidation`에 보관했고 파일 hash 일치를 검증했다.
-- 최종 무개입 anonymous recursive clone과 실제 GitHub Actions 결과는 CrossTwins 변경 게시 후 별도로 검증한다. SDK checkout 성공과 전체 CI 성공은 구분해 판정한다.
+- 게시된 `192e7e2c568f7ecd0b6276e3c9a4cf60a23a54e9`의 인증 없는 fresh recursive clone이 수동 변경 없이 성공했다. superproject와 SDK working tree가 clean이고 gitlink와 SDK HEAD가 모두 `539da34db67a546cad961525d7e9b6364dfa2fe4`이다.
+- 실제 [CI run 37939616105](https://github.com/chohoyeon-ops/CrossTwins/actions/runs/37939616105)의 모든 recursive checkout이 성공했다. 호스트 테스트 554개와 firmware 빌드 5개(default, sticky, x4pro, x4c, papermono)도 모두 통과했다. 전체 run은 아래 검사 실패 때문에 `completed / failure`로 종료됐다. SDK checkout 복구와 전체 CI 성공은 별개로 판정한다.
+- 전체 CI의 별도 차단 원인은 기존 header 5개의 clang-format 차이와 cppcheck low/style 3건이다. `LibraryListActivity.cpp:42` 및 `TxtReaderActivity.cpp:180`의 `constParameterReference`, `TxtReaderActivity.cpp:113`의 `useStlAlgorithm`이 실패 로그에 기록됐다. firmware 리팩터링 금지 범위를 존중하여 코드를 고치거나 검사 정책을 완화하지 않았다. 최종 job별 결과와 로그는 이번 한국어 완료 보고서에 기록한다. 이 결과 반영은 로컬 문서 변경이며 추가 commit/push는 하지 않았다.
+
+## 2026-10-10 품질 검사 복구 검증 — 전체 host 검증 대기
+
+- 기준 `master / 192e7e2c568f7ecd0b6276e3c9a4cf60a23a54e9`와 원격 HEAD가 일치함을 재확인했다. 기존 `AGENTS.md`, `analysis/` 및 위의 미커밋 SDK 검증 기록을 보존했다.
+- clang-format 21.1.8 및 기존 wrapper로 이전 실패의 header 5개를 재현·수정했다. 전체 wrapper 재실행에서 추가 diff가 없고, include 목록과 공백을 제외한 본문이 보존됐다.
+- `drawRecentProgress`와 private `updateViewport`의 renderer 인자를 const reference로 바꿨다. 호출하는 renderer 메서드는 모두 const이며 override/interface 변경은 없다. `updateViewport`의 header/definition도 일치한다.
+- QR 텍스트 예약 크기는 `size_t` 초기값을 가진 `std::accumulate`로 계산한다. 빈 컨테이너는 0, 비어 있지 않으면 줄바꿈 수 `size() - 1`에서 시작해 기존 순서대로 문자열 길이를 더한다. 부수효과나 early exit가 없고 unsigned overflow 규칙도 기존과 같다.
+- 기존 `pio check --fail-on-defect low --fail-on-defect medium --fail-on-defect high`가 `No defects found`로 통과했다. suppression/threshold/workflow/toolchain/SDK 정책은 변경하지 않았다. 로컬 Windows cppcheck binary는 2.20.0(package 2.20.1), Core는 6.1.19이다. Linux CI와 OS가 다름을 구분한다.
+- 관련 focused tests는 91/91 PASS다. 전체 host build는 기존 `ChapterHtmlSlimParserTest.cpp:121,126`의 Windows `wchar_t*` 경로와 `HalFile::open(const char*)` 불일치 때문에 실패했다. 지정된 수정 대상 밖의 테스트 두 호출을 `path.string().c_str()`로 바꾸는 추가 승인을 요청했으며 아직 적용하지 않았다. 테스트를 생략하거나 전체 PASS로 표현하지 않는다.
+- `gh_release`와 `gh_release_rc`는 별도 object/cache root에서 exit 0으로 성공했다. 크기는 4,267,840 / 4,267,888 bytes이며, compile-time version은 `1.6.5` / `1.6.5-rc+192e7e2`이다. ESP32-C3 header/checksum/validation hash도 PASS다. global 설치 toolchain/framework는 재사용했다.
+- firmware와 SHA-256/source patch metadata를 `CrossTwins-CI-Final-20261010-032604-192e7e2c` 이름으로 로컬 `C:\Codex\korean-artifacts`와 iCloud `CrossTwins\DeviceValidation`에 보존하고 read-back hash 일치를 확인했다. 미커밋 수정 빌드라는 provenance를 명시했다. iCloud 서버 동기화 완료는 별도 확인하지 못했다.
+- 전체 로컬 host 검증과 새 GitHub CI는 아직 미완료다. 이번 변경은 commit/push하지 않았고 기존 run의 실패 상태를 새 결과로 대체하지 않았다. SDK gitlink와 `.gitmodules`는 그대로 유지했다. Release 작업은 수행하지 않았다.
+
+### 추가 승인 후 Windows 전체 검증 결과
+
+- 사용자가 승인한 `ChapterHtmlSlimParserTest.cpp`의 두 호출만 `path.string().c_str()`로 수정했다. 테스트 stub의 `HalFile::open`은 호출 중 `std::fopen`을 실행하고 `FILE*`만 보관하므로 임시 string의 포인터 수명이 안전하다. 현재 ASCII 임시 경로의 Windows narrow API 호환성을 확인했으며 일반 Unicode 경로 지원 변경은 하지 않았다.
+- 전체 Windows host build는 성공했고 554개 실행 결과 553 PASS / 1 FAIL이다. 실패는 기존 `CssParserTest.FailedPromotionRestoresTheOnlyBackupCache`이며 단독 실행에서도 재현됐다. 전체 suite PASS로 표현하지 않는다.
+- 원인: `CssParserTest.cpp:222`는 native path 문자열(`...\\css_rules.cache.tmp`)을 실패 주입 대상으로 등록하지만 parser는 `cachePath + "/css_rules.cache.tmp"`를 사용한다. `test/css_parser/stubs/HalStorage.h:71`의 raw string 비교가 false여서 의도한 rename 실패가 주입되지 않는다. standalone 진단에서 raw 문자열은 다르고 Windows filesystem path로는 같음을 확인했다. 그 결과 `writer.saveToCache(true)`가 예상 false 대신 true를 반환하고 replacement rule이 남는다.
+- 새로운 CSS 테스트/stub 변경은 이번 두 줄 승인 밖이므로 적용하지 않았다. 검사와 threshold를 유지한 clang-format/cppcheck 재검증은 PASS이며, firmware source patch hash는 기존 release/RC 검증 당시와 동일하다. 전체 host 검증 실패에 따라 추가 build 재실행·commit·push·새 CI 실행은 보류했다. 기존 성공 firmware와 archive는 보존했다.
+- 최소 대안은 실패 주입 경로를 parser와 같은 문자열로 등록하도록 해당 테스트 한 줄을 고치는 것이다. 예: `Storage.failNextRename(cachePath() + "/css_rules.cache.tmp", cachePath() + "/css_rules.cache");`. 아직 적용하지 않았다. source 범위를 넓히기 전 별도 승인이 필요하다.
+
+### CSS 경로 수정 추가 승인 후 최종 로컬 검증
+
+- 사용자 추가 승인에 따라 `CssParserTest.cpp:222` 실패 주입 경로 한 줄만 위의 최소 대안대로 일치시켰다. stub 및 parser 구현, 실패 주입과 모든 assertion은 유지했다.
+- CSS 단독 테스트가 통과했다. `saveToCache(true)` 실패 반환, backup 복구, temporary/backup 정리, original rule만 남음 및 replacement rule 없음의 기존 검증이 모두 유지됐다. 전체 Windows host tests도 554/554 PASS이며 테스트 수는 바꾸지 않았다.
+- 전체 clang-format wrapper 재실행에 추가 diff가 없고 `git diff --check` 및 기존 threshold의 cppcheck가 PASS다. `gh_release`/`gh_release_rc` 재빌드도 exit 0이며 ESP32-C3 header/checksum/validation hash가 유효하다. 최종 재검증은 이전 object cache를 재사용했다.
+- 승인된 source/test 10개 파일과 이 CI 복구 문서만 commit/push 대상이다. SDK gitlink, `.gitmodules`, PlatformIO/dependency, 검사 정책, 사용자 `AGENTS.md`와 `analysis/`는 변경·포함하지 않는다. 전체 복구 완료 판정은 이후 새 push의 GitHub CI 최종 SUCCESS를 확인한 뒤 내려야 한다. 실제 run URL과 전체 job 결과는 별도 iCloud 최종 보고서에 기록한다. Release/tag 작업은 실행하지 않는다.
 
 ## Release 계약
 

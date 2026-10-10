@@ -49,9 +49,7 @@ class SdCardFontSystem {
 
   /// Mark the registry as needing re-discovery.
   /// Thread-safe: can be called from the web server task.
-  void markRegistryDirty() {
-    registryDirty_.store(true, std::memory_order_release);
-  }
+  void markRegistryDirty() { registryDirty_.store(true, std::memory_order_release); }
 
   /// If the registry is dirty, re-scan the SD card now and clear the flag.
   /// Used by the web UI so uploaded/deleted fonts appear in the list
@@ -108,7 +106,7 @@ class SdCardFontSystem {
   std::string ttfFamily_;     // loaded vector family name ("" = none)
   int ttfFontId_ = 0;         // renderer font id for ttf_ (0 = none)
   uint8_t ttfPointSize_ = 0;  // size ttf_ was built at
-#endif  // CROSSPOINT_VECTOR_FONTS
+#endif                        // CROSSPOINT_VECTOR_FONTS
 };
 
 // Global SD card font system instance (defined in main.cpp).
