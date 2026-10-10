@@ -187,6 +187,8 @@ class SettingsActivity final : public UiTabListActivity {
   bool quickResumeTimeoutAutoEnabled = false;
 
   OptionPopup optionPopup;
+  // Internal app versions are at most 31 bytes; the display adds the translated brand.
+  char firmwareVersionLabel[48]{};
 
   // Row structure (label/actionValue) for *currentSettings, rebuilt only when
   // the active category or a category's setting list changes

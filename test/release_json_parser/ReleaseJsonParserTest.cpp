@@ -4,6 +4,82 @@
 #include <string>
 
 #include "lib/JsonParser/ReleaseJsonParser.h"
+#include "src/components/SettingsFirmwareVersionLabel.h"
+
+TEST(SettingsFirmwareVersionLabel, UsesBrandAndUppercaseCounterWithoutSha) {
+  char output[48]{};
+  ASSERT_TRUE(formatSettingsFirmwareVersionLabel("1.6.5-ct.3+3e3720e", "CrossTwins", output, sizeof(output)));
+  EXPECT_STREQ(output, "CrossTwins-1.6.5-CT.3");
+  EXPECT_EQ(std::string(output).find('+'), std::string::npos);
+  EXPECT_EQ(std::string(output).find("ct."), std::string::npos);
+}
+
+TEST(SettingsFirmwareVersionLabel, BuildMetadataDoesNotChangeDisplay) {
+  for (const char* version : {"1.6.5-ct.3", "1.6.5-ct.3+abcdef0", "1.6.5-ct.3+ota-test", "v1.6.5-ct.3+1234567"}) {
+    char output[48]{};
+    ASSERT_TRUE(formatSettingsFirmwareVersionLabel(version, "CrossTwins", output, sizeof(output)));
+    EXPECT_STREQ(output, "CrossTwins-1.6.5-CT.3");
+  }
+}
+
+TEST(SettingsFirmwareVersionLabel, DerivesBaseCounterAndBrandFromInputs) {
+  char output[48]{};
+  ASSERT_TRUE(formatSettingsFirmwareVersionLabel("2.7.9-ct.12+abcdef0", "CrossTwins", output, sizeof(output)));
+  EXPECT_STREQ(output, "CrossTwins-2.7.9-CT.12");
+  ASSERT_TRUE(formatSettingsFirmwareVersionLabel("1.6.5-ct.4", "Reader", output, sizeof(output)));
+  EXPECT_STREQ(output, "Reader-1.6.5-CT.4");
+}
+
+TEST(SettingsFirmwareVersionLabel, NonCtBuildsRetainCallerFallback) {
+  for (const char* version :
+       {"1.6.5", "1.6.5-dev-master-abcdef0", "1.6.5-rc+abcdef0", "1.6.5-CT.3", "1.6.5-foo-ct.3"}) {
+    char output[48] = "stale label";
+    EXPECT_FALSE(formatSettingsFirmwareVersionLabel(version, "CrossTwins", output, sizeof(output)));
+    EXPECT_EQ(output[0], '\0');
+  }
+}
+
+TEST(SettingsFirmwareVersionLabel, RejectsMalformedOrNonCanonicalCounters) {
+  for (const char* version : {"", "garbage", "01.6.5-ct.3", "1.6.5-ct.0", "1.6.5-ct.03", "1.6.5-ct.3.1",
+                              "1.6.5-ct.3-extra", "1.6.5-ct.3+", "1.6.5-ct.3+bad/SHA"}) {
+    char output[48]{};
+    EXPECT_FALSE(formatSettingsFirmwareVersionLabel(version, "CrossTwins", output, sizeof(output))) << version;
+    EXPECT_EQ(output[0], '\0');
+  }
+}
+
+TEST(SettingsFirmwareVersionLabel, RequiresSpaceForTerminatorWithoutTruncating) {
+  char output[24];
+  memset(output, '#', sizeof(output));
+  EXPECT_FALSE(formatSettingsFirmwareVersionLabel("1.6.5-ct.3", "CrossTwins", output, 21));
+  EXPECT_EQ(output[0], '\0');
+  EXPECT_EQ(output[21], '#');
+  ASSERT_TRUE(formatSettingsFirmwareVersionLabel("1.6.5-ct.3", "CrossTwins", output, 22));
+  EXPECT_STREQ(output, "CrossTwins-1.6.5-CT.3");
+  EXPECT_EQ(output[22], '#');
+}
+
+TEST(SettingsFirmwareVersionLabel, RejectsMissingArgumentsAndOverlongLabel) {
+  char output[48]{};
+  EXPECT_FALSE(formatSettingsFirmwareVersionLabel(nullptr, "CrossTwins", output, sizeof(output)));
+  EXPECT_FALSE(formatSettingsFirmwareVersionLabel("1.6.5-ct.3", "", output, sizeof(output)));
+  EXPECT_FALSE(formatSettingsFirmwareVersionLabel("1.6.5-ct.3", "CrossTwins", nullptr, 0));
+  output[0] = '#';
+  EXPECT_FALSE(formatSettingsFirmwareVersionLabel("1.6.5-ct.3", "CrossTwins", output, 0));
+  EXPECT_EQ(output[0], '#');
+  EXPECT_FALSE(formatSettingsFirmwareVersionLabel("1.6.5-ct.1234567890123456789012345678901234567890", "CrossTwins",
+                                                  output, sizeof(output)));
+}
+
+TEST(SettingsFirmwareVersionLabel, LeavesInternalVersionAndOtaContractIntact) {
+  char version[] = "1.6.5-ct.3+abcdef0";
+  char output[48]{};
+  ASSERT_TRUE(formatSettingsFirmwareVersionLabel(version, "CrossTwins", output, sizeof(output)));
+  EXPECT_STREQ(version, "1.6.5-ct.3+abcdef0");
+  EXPECT_EQ(compareFirmwareVersions("v1.6.5-ct.3", version), FirmwareVersionOrder::Equal);
+  EXPECT_EQ(compareFirmwareVersions("v1.6.5-ct.3", "1.6.5-ct.2+ota-test"), FirmwareVersionOrder::Newer);
+  EXPECT_EQ(compareFirmwareVersions(output, version), FirmwareVersionOrder::Invalid);
+}
 
 namespace {
 

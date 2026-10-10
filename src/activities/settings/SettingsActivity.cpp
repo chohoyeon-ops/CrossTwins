@@ -35,6 +35,7 @@
 #include "UserVisibleFirmwareVersion.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/IntervalSelectionActivity.h"
+#include "components/SettingsFirmwareVersionLabel.h"
 #include "components/UITheme.h"
 #include "components/UIThemeTokens.h"
 #include "components/UiAppHelpers.h"
@@ -138,6 +139,8 @@ void SettingsActivity::rebuildSettingsLists() {
 
 void SettingsActivity::onEnter() {
   UiTabListActivity::onEnter();
+  formatSettingsFirmwareVersionLabel(CROSSPOINT_VERSION, tr(STR_CROSSTWINS), firmwareVersionLabel,
+                                     sizeof(firmwareVersionLabel));
 
   // Reset selection to first category (ring position 0, the tab bar, comes
   // from the base's per-tab nav reset)
@@ -614,7 +617,7 @@ void SettingsActivity::drawChrome() {
   // Version rides in the header's trailing label slot: the footer position
   // conflicts with button hints on non-touch devices.
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_SETTINGS_TITLE),
-                 USER_VISIBLE_FIRMWARE_VERSION);
+                 firmwareVersionLabel[0] ? firmwareVersionLabel : USER_VISIBLE_FIRMWARE_VERSION);
 }
 
 void SettingsActivity::drawFooter() {
