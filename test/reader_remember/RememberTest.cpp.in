@@ -12,12 +12,21 @@
 #define LOG_INF(...) ((void)0)
 #define LOG_DBG(...) ((void)0)
 #define LOG_ERR(...) ((void)0)
-constexpr int UI_12_FONT_ID = 0, STR_EMPTY_FILE = 0, STR_NO_FONTS_AVAILABLE = 0,
+constexpr int UI_10_FONT_ID = 0, UI_12_FONT_ID = 0, STR_BACK = 0, STR_EMPTY_FILE = 0, STR_NO_FONTS_AVAILABLE = 0,
               STR_MEMORY_ERROR = 0, STR_PAGE_LOAD_ERROR = 0, STR_INDEXING = 0, STR_SAVE_PROGRESS_FAILED = 0;
-const char* tr(int) { return "message"; }
+const char* tr(int key) { return key == STR_BACK ? "Back" : "message"; }
 unsigned long millis() { return 1; }
-struct EpdFontFamily { enum { BOLD }; };
-struct HalDisplay { enum GrayscaleBase { Combined, Separate }; enum { HALF_REFRESH, FAST_REFRESH }; };
+struct EpdFontFamily { using Style = int; enum { BOLD, REGULAR }; };
+struct HalDisplay { using RefreshMode = int; enum GrayscaleBase { Combined, Separate }; enum { HALF_REFRESH, FAST_REFRESH }; };
+struct MappedInputManager {
+  enum class Button { Back };
+  struct Labels { const char* btn1; const char* btn2; const char* btn3; const char* btn4; };
+  bool backReleased = false;
+  bool wasReleased(Button) const { return backReleased; }
+  Labels mapLabels(const char* btn1, const char* btn2, const char* btn3, const char* btn4) const {
+    return {btn1, btn2, btn3, btn4};
+  }
+} mappedInput;
 struct GfxRenderer {
   enum class Orientation { Portrait };
   struct FontCache { void releaseSdFontCaches() {} } fontCache;
@@ -26,6 +35,8 @@ struct GfxRenderer {
   int displays = 0;
   struct Caps { HalDisplay::GrayscaleBase base = HalDisplay::Separate; };
   Caps grayscaleCapabilities() const { return {}; }
+  int getLineHeight(int) const { return 20; }
+  int getScreenHeight() const { return 800; }
   void clearScreen(int = 0) {}
   void drawCenteredText(int, int, const char*, bool, int) {}
   void drawPixel(int, int, bool) {}
@@ -60,8 +71,25 @@ struct {
 } Storage;
 [[maybe_unused]] struct { size_t getFreeHeap() { return 100000; } size_t getMaxAllocHeap() { return 100000; } } ESP;
 struct { void ensureLoaded(GfxRenderer&) {} } sdFontSystem;
-struct { void goToFullScreenMessage(const char*) {} } activityManager;
-struct { void drawPopup(GfxRenderer&, const char*) {} } GUI;
+struct {
+  bool messageShown = false;
+  bool backToHomeEnabled = false;
+  int homeCalls = 0;
+  void goToFullScreenMessage(const char*, int, bool allowBackToHome) {
+    messageShown = true;
+    backToHomeEnabled = allowBackToHome;
+  }
+  void goHome() { ++homeCalls; }
+} activityManager;
+struct {
+  int hintDraws = 0;
+  std::string firstHint;
+  void drawPopup(GfxRenderer&, const char*) {}
+  void drawButtonHints(GfxRenderer&, const char* btn1, const char*, const char*, const char*) {
+    ++hintDraws;
+    firstHint = btn1;
+  }
+} GUI;
 struct FsHelpers { static bool hasXtcExtension(const std::string& p) { return p.ends_with(".xtc"); } };
 struct ScreenshotUtil { static void takeScreenshot(GfxRenderer&) {} };
 struct State {
@@ -98,6 +126,21 @@ class ReaderActivity : public Activity {
   void onEnter();
   void onExit();
 };
+class FullScreenMessageActivity : public Activity {
+ public:
+  GfxRenderer& renderer;
+  MappedInputManager& mappedInput;
+  std::string text;
+  EpdFontFamily::Style style = EpdFontFamily::REGULAR;
+  HalDisplay::RefreshMode refreshMode = HalDisplay::FAST_REFRESH;
+  bool allowBackToHome = false;
+  FullScreenMessageActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string text, bool allowBack)
+      : renderer(renderer), mappedInput(mappedInput), text(std::move(text)), allowBackToHome(allowBack) {}
+  void onEnter();
+  void loop();
+};
+@FULLSCREEN_ENTER@
+@FULLSCREEN_LOOP@
 @ENTER@
 @EXIT@
 
@@ -182,8 +225,41 @@ class ReaderRemember : public testing::TestWithParam<const char*> {
  protected:
   void SetUp() override {
     APP_STATE = {}; RECENT_BOOKS = {}; Storage.present = true; SETTINGS.font = 1; failAllocation = false;
+    activityManager = {}; GUI = {}; mappedInput = {};
   }
 };
+
+TEST(ReaderFontGate, MissingEpubAndTxtFontsOfferBackToHome) {
+  for (const char* path : {"book.epub", "book.txt"}) {
+    ReaderActivity reader;
+    reader.bookPath = path;
+    SETTINGS.font = 0;
+    activityManager = {};
+    reader.onEnter();
+    EXPECT_TRUE(activityManager.messageShown) << path;
+    EXPECT_TRUE(activityManager.backToHomeEnabled) << path;
+    EXPECT_FALSE(reader.finished) << path;
+  }
+}
+
+TEST(FullScreenMessage, BackHintAndHomeActionAreOptIn) {
+  GfxRenderer renderer;
+  FullScreenMessageActivity defaultMessage(renderer, mappedInput, "SD card error", false);
+  defaultMessage.onEnter();
+  mappedInput.backReleased = true;
+  defaultMessage.loop();
+  EXPECT_EQ(GUI.hintDraws, 0);
+  EXPECT_EQ(activityManager.homeCalls, 0);
+
+  GUI = {};
+  activityManager = {};
+  FullScreenMessageActivity fontMessage(renderer, mappedInput, "No fonts available", true);
+  fontMessage.onEnter();
+  EXPECT_EQ(GUI.hintDraws, 1);
+  EXPECT_EQ(GUI.firstHint, "Back");
+  fontMessage.loop();
+  EXPECT_EQ(activityManager.homeCalls, 1);
+}
 TEST_P(ReaderRemember, NewAndExistingArePromotedOnlyAfterUsableRender) {
   for (bool existing : {false, true}) {
     ReaderActivity reader;

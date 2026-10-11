@@ -316,8 +316,9 @@ void ActivityManager::goToSleep(bool fromTimeout) {
 
 void ActivityManager::goToBoot() { replaceActivity(std::make_unique<BootActivity>(renderer, mappedInput)); }
 
-void ActivityManager::goToFullScreenMessage(std::string message, EpdFontFamily::Style style) {
-  replaceActivity(std::make_unique<FullScreenMessageActivity>(renderer, mappedInput, std::move(message), style));
+void ActivityManager::goToFullScreenMessage(std::string message, EpdFontFamily::Style style, bool allowBackToHome) {
+  replaceActivity(std::make_unique<FullScreenMessageActivity>(renderer, mappedInput, std::move(message), style,
+                                                              HalDisplay::FAST_REFRESH, allowBackToHome));
 }
 
 void ActivityManager::goHome(HomeMenuItem initialMenuItem, bool cleanInitialRefresh) {
