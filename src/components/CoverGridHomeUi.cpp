@@ -190,7 +190,8 @@ void CoverGridHomeUi::drawCurrent(UiScreen& screen, fui::Rect rect, const int co
   card.styles.selected.radius = theme.listRowRadius;
   card.styles.active = card.styles.selected;
   card.titleText = theme.bodyText;
-  card.titleText.maxLines = renderer.getScreenWidth() > renderer.getScreenHeight() ? 1 : 2;
+  // Korean fork: the continue-reading title stays on one line (ellipsised), for Hangul and Latin alike.
+  card.titleText.maxLines = 1;
   card.authorText = theme.smallText;
   card.progressText = theme.smallText;
   card.progressHeight = 6;
