@@ -154,7 +154,13 @@ TEST(TxtReaderOptionsTest, KeepsFontAndSizeTabsAndExposesHyphenationThenAntiAlia
   }
   EXPECT_EQ(textsettings::tabAt(profile, std::size(expectedTabs)), Tab::Count);
   EXPECT_FALSE(textsettings::hasLayoutPreview(profile));
-  EXPECT_TRUE(textsettings::hasLayoutPreview(textsettings::Profile::Epub));
+  constexpr textsettings::Profile epubProfile = textsettings::Profile::Epub;
+  EXPECT_TRUE(textsettings::hasLayoutPreview(epubProfile));
+  ASSERT_EQ(textsettings::styleControlCount(epubProfile), 3u);
+  EXPECT_EQ(textsettings::styleControlAt(epubProfile, 0), StyleControl::Hyphenation);
+  EXPECT_EQ(textsettings::styleControlAt(epubProfile, 1), StyleControl::EmbeddedStyle);
+  EXPECT_EQ(textsettings::styleControlAt(epubProfile, 2), StyleControl::AntiAliasing);
+  EXPECT_FALSE(textsettings::hasStyleControl(epubProfile, StyleControl::FocusReading));
   ASSERT_EQ(textsettings::styleControlCount(profile), 2u);
   EXPECT_EQ(textsettings::styleControlAt(profile, 0), StyleControl::Hyphenation);
   EXPECT_EQ(textsettings::styleControlAt(profile, 1), StyleControl::AntiAliasing);

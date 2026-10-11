@@ -82,6 +82,10 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
     }
   }
 
+  // Keep the legacy key stable for older settings consumers, but never persist
+  // Focus Reading as enabled.
+  doc["focusReadingEnabled"] = 0;
+
   // Front button remap — managed by RemapFrontButtons sub-activity, not in SettingsList.
   doc["frontButtonBack"] = frontButtonBack;
   doc["frontButtonConfirm"] = frontButtonConfirm;
@@ -178,6 +182,12 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
       s.*(info.valuePtr) = v;
     }
   }
+
+  // Retain compatibility with settings files written before Focus Reading was
+  // retired, then normalize the runtime value and saved format to disabled.
+  const auto focusReadingSetting = doc["focusReadingEnabled"];
+  if (!focusReadingSetting.is<uint8_t>() || focusReadingSetting.as<uint8_t>() != 0) needsResave = true;
+  s.focusReadingEnabled = 0;
 
   const auto indentSpaces = doc["paragraphIndentSpaces"];
   const bool hasSavedWidth = indentSpaces.is<int>();
@@ -312,7 +322,7 @@ ReaderRenderSpec CrossPointSettings::readerRenderSpec(const uint16_t viewportWid
   spec.hyphenationEnabled = hyphenationEnabled != 0;
   spec.embeddedStyle = embeddedStyle != 0;
   spec.imageRendering = imageRendering;
-  spec.focusReadingEnabled = focusReadingEnabled != 0;
+  spec.focusReadingEnabled = false;
   return spec;
 }
 

@@ -1,0 +1,123 @@
+#include <gtest/gtest.h>
+
+#include <cstdint>
+#include <map>
+#include <string>
+
+class JsonVariantConst {
+ public:
+  JsonVariantConst() = default;
+  explicit JsonVariantConst(const uint8_t value) : present(true), value(value) {}
+
+  template <typename T>
+  bool is() const {
+    return present;
+  }
+
+  template <typename T>
+  T as() const {
+    return static_cast<T>(value);
+  }
+
+ private:
+  bool present = false;
+  uint8_t value = 0;
+};
+
+class JsonDocument {
+ public:
+  class Output {
+   public:
+    Output(JsonDocument& doc, const char* key) : doc(doc), key(key) {}
+    Output& operator=(const int value) {
+      doc.values[key] = static_cast<uint8_t>(value);
+      return *this;
+    }
+
+   private:
+    JsonDocument& doc;
+    std::string key;
+  };
+
+  Output operator[](const char* key) { return Output(*this, key); }
+  JsonVariantConst operator[](const char* key) const {
+    const auto it = values.find(key);
+    return it == values.end() ? JsonVariantConst{} : JsonVariantConst(it->second);
+  }
+  uint8_t value(const char* key) const {
+    const auto it = values.find(key);
+    return it == values.end() ? 0 : it->second;
+  }
+
+ private:
+  std::map<std::string, uint8_t> values;
+};
+
+struct Settings {
+  uint8_t focusReadingEnabled = 0;
+};
+
+void loadLegacyFocusSetting(JsonVariantConst docValue, Settings& settings, bool& needsResave) {
+  class SettingsDocument {
+   public:
+    explicit SettingsDocument(JsonVariantConst value) : value(value) {}
+    JsonVariantConst operator[](const char*) const { return value; }
+
+   private:
+    JsonVariantConst value;
+  };
+  const SettingsDocument doc(docValue);
+  Settings& s = settings;
+@FOCUS_LOAD@
+}
+
+void saveLegacyFocusSetting(JsonDocument& doc) {
+@FOCUS_SAVE@
+}
+
+TEST(FocusReadingCompatibility, SavedZeroRemainsZeroWithoutResave) {
+  JsonDocument doc;
+  doc["focusReadingEnabled"] = 0;
+  doc["fontSize"] = 14;
+  Settings settings{1};
+  bool needsResave = false;
+
+  loadLegacyFocusSetting(static_cast<const JsonDocument&>(doc)["focusReadingEnabled"], settings, needsResave);
+  saveLegacyFocusSetting(doc);
+
+  EXPECT_EQ(settings.focusReadingEnabled, 0);
+  EXPECT_FALSE(needsResave);
+  EXPECT_EQ(doc.value("focusReadingEnabled"), 0);
+  EXPECT_EQ(doc.value("fontSize"), 14);
+}
+
+TEST(FocusReadingCompatibility, SavedOneIsDisabledAndScheduledForResave) {
+  JsonDocument doc;
+  doc["focusReadingEnabled"] = 1;
+  doc["fontSize"] = 16;
+  Settings settings{1};
+  bool needsResave = false;
+
+  loadLegacyFocusSetting(static_cast<const JsonDocument&>(doc)["focusReadingEnabled"], settings, needsResave);
+  saveLegacyFocusSetting(doc);
+
+  EXPECT_EQ(settings.focusReadingEnabled, 0);
+  EXPECT_TRUE(needsResave);
+  EXPECT_EQ(doc.value("focusReadingEnabled"), 0);
+  EXPECT_EQ(doc.value("fontSize"), 16);
+}
+
+TEST(FocusReadingCompatibility, MissingKeyDefaultsToDisabledAndIsScheduledForResave) {
+  JsonDocument doc;
+  doc["fontSize"] = 18;
+  Settings settings{1};
+  bool needsResave = false;
+
+  loadLegacyFocusSetting(static_cast<const JsonDocument&>(doc)["focusReadingEnabled"], settings, needsResave);
+  saveLegacyFocusSetting(doc);
+
+  EXPECT_EQ(settings.focusReadingEnabled, 0);
+  EXPECT_TRUE(needsResave);
+  EXPECT_EQ(doc.value("focusReadingEnabled"), 0);
+  EXPECT_EQ(doc.value("fontSize"), 18);
+}

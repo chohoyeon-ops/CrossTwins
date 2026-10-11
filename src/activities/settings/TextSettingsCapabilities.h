@@ -21,7 +21,7 @@ enum class LayoutControl : uint8_t {
   Count
 };
 
-enum class StyleControl : uint8_t { FocusReading, Hyphenation, EmbeddedStyle, AntiAliasing, Count };
+enum class StyleControl : uint8_t { Hyphenation, EmbeddedStyle, AntiAliasing, FocusReading, Count };
 enum class AlignmentOption : uint8_t { Justified, Left, Center, Right, BookStyle, Count };
 
 constexpr size_t tabCount(const Profile) { return static_cast<size_t>(Tab::Count); }
@@ -53,7 +53,7 @@ constexpr LayoutControl layoutControlAt(const Profile profile, const size_t visi
 }
 
 constexpr size_t styleControlCount(const Profile profile) {
-  return profile == Profile::Txt ? 2 : static_cast<size_t>(StyleControl::Count);
+  return profile == Profile::Txt ? 2 : static_cast<size_t>(StyleControl::FocusReading);
 }
 
 constexpr StyleControl styleControlAt(const Profile profile, const size_t visibleIndex) {
@@ -67,8 +67,8 @@ constexpr StyleControl styleControlAt(const Profile profile, const size_t visibl
         return StyleControl::Count;
     }
   }
-  return visibleIndex < static_cast<size_t>(StyleControl::Count) ? static_cast<StyleControl>(visibleIndex)
-                                                                 : StyleControl::Count;
+  return visibleIndex < static_cast<size_t>(StyleControl::FocusReading) ? static_cast<StyleControl>(visibleIndex)
+                                                                        : StyleControl::Count;
 }
 
 constexpr bool hasLayoutControl(const Profile profile, const LayoutControl control) {

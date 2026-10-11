@@ -330,7 +330,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t pwrBtnFootnoteBack = 1;
   // Use book's embedded CSS styles for EPUB rendering (1 = enabled, 0 = disabled)
   uint8_t embeddedStyle = 1;
-  // Focus Reading - emphasizes the first part of words with bold
+  // Legacy persisted setting; always normalized to disabled.
   uint8_t focusReadingEnabled = 0;
   uint8_t readerMenuStyle = READER_MENU_LIST;
   // SD card reader font family name (empty = no reader font selected)

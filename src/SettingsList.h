@@ -254,9 +254,6 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Toggle(StrId::STR_EMBEDDED_STYLE, &CrossPointSettings::embeddedStyle, "embeddedStyle",
                             StrId::STR_CAT_READER)
             .withTextSettings(),
-        SettingInfo::Toggle(StrId::STR_FOCUS_READING, &CrossPointSettings::focusReadingEnabled, "focusReadingEnabled",
-                            StrId::STR_CAT_READER)
-            .withTextSettings(),
         SettingInfo::Toggle(StrId::STR_HYPHENATION, &CrossPointSettings::hyphenationEnabled, "hyphenationEnabled",
                             StrId::STR_CAT_READER)
             .withTextSettings(),

@@ -27,8 +27,7 @@ constexpr StrId TAB_NAME_IDS[] = {StrId::STR_FONT, StrId::STR_SIZE, StrId::STR_L
 constexpr StrId LAYOUT_ROW_NAME_IDS[] = {
     StrId::STR_LINE_SPACING,          StrId::STR_WORD_SPACING, StrId::STR_CHARACTER_SPACING, StrId::STR_EXTRA_SPACING,
     StrId::STR_PARAGRAPH_INDENTATION, StrId::STR_ALIGNMENT,    StrId::STR_SCREEN_MARGIN};
-constexpr StrId STYLE_ROW_NAME_IDS[] = {StrId::STR_FOCUS_READING, StrId::STR_HYPHENATION, StrId::STR_EMBEDDED_STYLE,
-                                        StrId::STR_TEXT_AA};
+constexpr StrId STYLE_ROW_NAME_IDS[] = {StrId::STR_HYPHENATION, StrId::STR_EMBEDDED_STYLE, StrId::STR_TEXT_AA};
 
 int findCurrentFontIndex(const SdCardFontRegistry* registry, const char* sdFontFamilyName) {
   if (sdFontFamilyName[0] != '\0' && registry) {
@@ -514,9 +513,6 @@ std::string TextSettingsActivity::layoutValueText(int row) const {
 
 void TextSettingsActivity::confirmStyleRow(int row) {
   switch (textsettings::styleControlAt(profile_, static_cast<size_t>(row))) {
-    case StyleRow::FocusReading:
-      SETTINGS.focusReadingEnabled = !SETTINGS.focusReadingEnabled;
-      break;
     case StyleRow::Hyphenation:
       SETTINGS.hyphenationEnabled = !SETTINGS.hyphenationEnabled;
       break;
@@ -536,8 +532,6 @@ void TextSettingsActivity::confirmStyleRow(int row) {
 
 std::string TextSettingsActivity::styleValueText(int row) const {
   switch (textsettings::styleControlAt(profile_, static_cast<size_t>(row))) {
-    case StyleRow::FocusReading:
-      return SETTINGS.focusReadingEnabled ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
     case StyleRow::Hyphenation:
       return SETTINGS.hyphenationEnabled ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
     case StyleRow::EmbeddedStyle:
@@ -550,8 +544,7 @@ std::string TextSettingsActivity::styleValueText(int row) const {
   }
 }
 
-// Only Focus Reading shows in the preview (bold prefixes); the other Style rows
-// have no distinct preview.
+// Style rows have no distinct preview.
 bool TextSettingsActivity::focusedRowHasNoPreview() const {
   if (ringPos() == 0 || tab_ != Tab::Style) return false;
   const StyleRow row = textsettings::styleControlAt(profile_, static_cast<size_t>(ringPos() - 1));
