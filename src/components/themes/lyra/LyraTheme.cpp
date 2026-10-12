@@ -1,5 +1,6 @@
 #include "LyraTheme.h"
 
+#include <FreeInkUIGfxRenderer.h>
 #include <GfxRenderer.h>
 #include <HalGPIO.h>
 #include <HalPowerManager.h>
@@ -12,6 +13,7 @@
 #include <vector>
 
 #include "RecentBooksStore.h"
+#include "components/RecentBookProgress.h"
 #include "components/UITheme.h"
 #include "components/icons/blocks.h"
 #include "components/icons/book.h"
@@ -207,7 +209,8 @@ void LyraTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* top
 
 void LyraTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                                     const int selectorIndex, bool& coverRendered, bool& coverBufferStored,
-                                    bool& bufferRestored, std::function<bool()> storeCoverBuffer) const {
+                                    bool& bufferRestored, std::function<bool()> storeCoverBuffer,
+                                    const BookProgressSnapshot* progressSnapshot) const {
   const int tileWidth = rect.width - 2 * LyraMetrics::values.contentSidePadding;
   const int tileHeight = rect.height;
   const int tileY = rect.y;
@@ -292,9 +295,34 @@ void LyraTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
       renderer.drawText(UI_12_FONT_ID, textX, titleY, line.c_str(), true, EpdFontFamily::BOLD);
       titleY += titleLineHeight;
     }
+    int textBlockEnd = titleY;
     if (!book.author.empty()) {
       titleY += renderer.getLineHeight(UI_10_FONT_ID) / 2;
       renderer.drawText(UI_10_FONT_ID, textX, titleY, author.c_str(), true);
+      textBlockEnd = titleY + renderer.getLineHeight(UI_10_FONT_ID);
+    }
+
+    if (progressSnapshot && progressSnapshot->percent >= 0 && textWidth >= 3) {
+      constexpr int barHeight = 6;
+      const int barY = tileY + tileHeight - hPaddingInSelection - barHeight;
+      const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+      const int chapterY = barY - lineHeight - 4;
+      const bool chapterFits =
+          progressSnapshot->chapterTitle[0] != '\0' && chapterY > textBlockEnd + 3 && chapterY + lineHeight + 2 < barY;
+      if (chapterFits) {
+        const std::string chapter = renderer.truncatedText(UI_10_FONT_ID, progressSnapshot->chapterTitle, textWidth);
+        renderer.drawText(UI_10_FONT_ID, textX, chapterY, chapter.c_str(), true);
+      }
+
+      if (barY > textBlockEnd + 3) {
+        namespace fui = freeink::ui;
+        fui::GfxRendererTarget progressTarget(renderer);
+        CrossPointUI::drawRecentBookProgress(
+            renderer, progressTarget,
+            fui::Rect{static_cast<int16_t>(textX), static_cast<int16_t>(barY), static_cast<int16_t>(textWidth),
+                      static_cast<int16_t>(barHeight)},
+            progressSnapshot->percent);
+      }
     }
   } else {
     drawEmptyRecents(renderer, rect);

@@ -34,6 +34,11 @@ bool UITheme::supportsCoverGrid() { return HalMemory::getPsramHeap().totalBytes 
 
 bool UITheme::hasCoverGridHome() { return SETTINGS.uiTheme == CrossPointSettings::COVER_GRID && supportsCoverGrid(); }
 
+bool UITheme::usesSingleLyraHome() {
+  return SETTINGS.uiTheme == CrossPointSettings::LYRA ||
+         (SETTINGS.uiTheme == CrossPointSettings::COVER_GRID && !supportsCoverGrid());
+}
+
 void UITheme::drawCoverGridHome(CoverGridHomeUi& home) { home.renderUi(); }
 
 void UITheme::setTheme(CrossPointSettings::UI_THEME type) {

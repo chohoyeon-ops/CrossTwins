@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "util/BookProgress.h"
+
 class Bitmap;
 class GfxRenderer;
 struct RecentBook;
@@ -269,7 +271,8 @@ class BaseTheme {
                              const char* rightLabel = nullptr) const;
   virtual void drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                                    const int selectorIndex, bool& coverRendered, bool& coverBufferStored,
-                                   bool& bufferRestored, std::function<bool()> storeCoverBuffer) const;
+                                   bool& bufferRestored, std::function<bool()> storeCoverBuffer,
+                                   const BookProgressSnapshot* progressSnapshot = nullptr) const;
   virtual void drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                               const std::function<std::string(int index)>& buttonLabel,
                               const std::function<UIIcon(int index)>& rowIcon) const;

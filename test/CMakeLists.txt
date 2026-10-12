@@ -65,6 +65,7 @@ add_subdirectory(page_link)
 add_subdirectory(content_opf_parser)
 add_subdirectory(chapter_position)
 add_subdirectory(home_button)
+add_subdirectory(book_progress_snapshot)
 add_subdirectory(txt_on_demand)
 
 add_subdirectory(inflate_stream)

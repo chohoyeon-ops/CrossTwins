@@ -9,6 +9,7 @@
 #include <Utf8.h>
 #include <ZipFile.h>
 
+#include "Epub/EpubProgress.h"
 #include "Epub/parsers/ContainerParser.h"
 #include "Epub/parsers/ContentOpfParser.h"
 #include "Epub/parsers/TocNavParser.h"
@@ -1051,10 +1052,8 @@ float Epub::calculateProgress(const int currentSpineIndex, const float currentSp
     return 0.0f;
   }
   const size_t prevChapterSize = (currentSpineIndex >= 1) ? getCumulativeSpineItemSize(currentSpineIndex - 1) : 0;
-  const size_t curChapterSize = getCumulativeSpineItemSize(currentSpineIndex) - prevChapterSize;
-  const float sectionProgSize = currentSpineRead * static_cast<float>(curChapterSize);
-  const float totalProgress = static_cast<float>(prevChapterSize) + sectionProgSize;
-  return totalProgress / static_cast<float>(bookSize);
+  const size_t curChapterEnd = getCumulativeSpineItemSize(currentSpineIndex);
+  return epub::calculateProgressFromCumulative(prevChapterSize, curChapterEnd, bookSize, currentSpineRead);
 }
 
 int Epub::resolveHrefToSpineIndex(const std::string& href) const {

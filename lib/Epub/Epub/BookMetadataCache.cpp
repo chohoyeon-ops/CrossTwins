@@ -9,9 +9,9 @@
 #include <deque>
 
 #include "FsHelpers.h"
+#include "ProgressSnapshotReader.h"
 
 namespace {
-constexpr uint8_t BOOK_CACHE_VERSION = 10;  // v10: ignore ambiguous guide text references
 constexpr char bookBinFile[] = "/book.bin";
 constexpr char tmpSpineBinFile[] = "/spine.bin.tmp";
 constexpr char tmpTocBinFile[] = "/toc.bin.tmp";
@@ -497,6 +497,17 @@ bool BookMetadataCache::load() {
   loaded = true;
   LOG_DBG("BMC", "Loaded cache data: %d spine, %d TOC entries", spineCount, tocCount);
   return true;
+}
+
+bool BookMetadataCache::loadProgressSnapshot(const std::string& cachePath, const uint16_t spineIndex,
+                                             const uint16_t page, const uint16_t totalPages, const bool includeChapter,
+                                             int& percent, char* chapterTitle, const size_t chapterTitleCapacity) {
+  percent = -1;
+  if (chapterTitle && chapterTitleCapacity > 0) chapterTitle[0] = '\0';
+  HalFile progressFile;
+  if (!Storage.openFileForRead("BMC", cachePath + bookBinFile, progressFile)) return false;
+  return epub::readBookBinProgressSnapshot(progressFile, BOOK_CACHE_VERSION, spineIndex, page, totalPages,
+                                           includeChapter, percent, chapterTitle, chapterTitleCapacity);
 }
 
 uint32_t BookMetadataCache::getCumulativeSize(const int index) const {

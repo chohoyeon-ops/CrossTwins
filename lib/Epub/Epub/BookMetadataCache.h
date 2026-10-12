@@ -4,6 +4,8 @@
 #include <HalStorage.h>
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <memory>
 #include <string>
@@ -11,6 +13,8 @@
 
 class BookMetadataCache {
  public:
+  static constexpr uint8_t BOOK_CACHE_VERSION = 10;
+
   struct BookMetadata {
     std::string title;
     std::string author;
@@ -117,6 +121,9 @@ class BookMetadataCache {
 
   // Reading phase (read mode)
   bool load();
+  static bool loadProgressSnapshot(const std::string& cachePath, uint16_t spineIndex, uint16_t page,
+                                   uint16_t totalPages, bool includeChapter, int& percent, char* chapterTitle,
+                                   size_t chapterTitleCapacity);
   SpineEntry getSpineEntry(int index);
   TocEntry getTocEntry(int index);
   // Cumulative byte size up to and including the given spine item (0 if out of range
