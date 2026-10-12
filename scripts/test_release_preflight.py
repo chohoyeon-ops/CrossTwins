@@ -56,6 +56,11 @@ class PreflightContracts(unittest.TestCase):
         self.assertEqual(ctx()["firmware_version"], VERSION)
         self.assertEqual(context(REPOSITORY, "v1.6.5-ct.4", SHA, SHA, SDK_SHA,
                                  "1.6.5", "1234", "2")["firmware_suffix"], "-ct.4")
+        current = context(REPOSITORY, "v1.6.5-ct.5", SHA, SHA, SDK_SHA,
+                          "1.6.5", "1234", "2")
+        validate_context(current)
+        self.assertEqual(current["firmware_suffix"], "-ct.5")
+        self.assertEqual(current["firmware_version"], f"1.6.5-ct.5+{SHA[:7]}")
 
     def test_invalid_and_historical_inputs(self):
         for tag in ("v1.6.5-ct.1", "v1.6.5-ct.2", "1.6.5-ct.3", "v1.6.5-ct.03",

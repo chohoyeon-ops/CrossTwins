@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Canonical CrossTwins ct.4+ tag (need not exist)'
+        description: 'Canonical CrossTwins tag (need not exist; ct.5 build target)'
         required: true
-        default: v1.6.5-ct.4
+        default: v1.6.5-ct.5
         type: string
       commit_sha:
         description: 'Full 40-character SHA; must equal the workflow revision'

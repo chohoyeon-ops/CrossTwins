@@ -28,7 +28,7 @@ class ReleaseVersionTests(unittest.TestCase):
                 self.assertEqual(firmware_version(release, BASE, SHA), "1.6.5-rc+9986adb")
 
     def test_cross_twins_tags_map_to_internal_versions_and_assets(self):
-        for counter in (1, 2, 3):
+        for counter in (1, 2, 3, 4, 5):
             tag = f"v1.6.5-ct.{counter}"
             with self.subTest(tag=tag):
                 release = resolve_release(tag, BASE, prerelease=True)
@@ -92,6 +92,7 @@ class ReleaseVersionTests(unittest.TestCase):
     def test_release_workflow_is_build_only_and_uses_resolved_suffix(self):
         workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/release.yml").read_text()
         self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("default: v1.6.5-ct.5", workflow)
         self.assertNotIn("types: [published]", workflow)
         self.assertIn("CROSSPOINT_RC_SUFFIX: ${{ needs.prepare.outputs.suffix }}", workflow)
         self.assertIn("needs: [prepare, checks, build-release]", workflow)
