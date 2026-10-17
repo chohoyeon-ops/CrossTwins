@@ -72,6 +72,7 @@ class TxtReaderActivity final : public ReaderActivity {
 
   void onExit() override;
   bool pageTurn(bool isForward) override;
+  bool remoteShortcut(bool readerMenu) override;
   bool isAtEndOfBook() const override;
   void onReturnFromEndOfBook() override;
 

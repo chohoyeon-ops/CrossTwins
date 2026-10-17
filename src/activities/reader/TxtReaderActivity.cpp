@@ -52,6 +52,12 @@ bool TxtReaderActivity::handleFormatInput() {
   return true;
 }
 
+bool TxtReaderActivity::remoteShortcut(const bool readerMenu) {
+  if (!readerMenu || isAtEndOfBook()) return false;
+  openReaderOptions();
+  return true;
+}
+
 void TxtReaderActivity::openReaderOptions() {
   if (!initialized) {
     RenderLock lock(*this);
