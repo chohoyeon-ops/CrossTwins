@@ -324,6 +324,7 @@ void startTask() {
 }
 
 bool startAsync() {
+  if (!port::compiledIn()) return false;
   radioIdleStopped.store(false, std::memory_order_relaxed);
   readerStartDeferred.store(false, std::memory_order_relaxed);
   bool expected = false;
@@ -343,6 +344,7 @@ bool startAsync() {
 }
 
 bool suspend(const uint32_t endTimeoutMs) {
+  if (!port::compiledIn()) return true;
   // Never stop the stack while a start is still in flight: the start task owns its
   // allocations until finishAttempt publishes completion.
   attemptCancelled.store(true, std::memory_order_release);
@@ -404,6 +406,7 @@ void begin(const Host& h, Config& c) {
 void requestConnect() { connectRequested = true; }
 
 bool tick(const Scene& s) {
+  if (!port::compiledIn()) return false;
   bool acted = false;
   // A book visit starts: the book comes in front, or another visit of it does.
   const bool entered = s.where == Where::Reader && (lastScene.where != Where::Reader || s.visit != lastScene.visit);
@@ -592,7 +595,7 @@ void settleStart() {
 }
 
 BuildRelease beforeChapterBuild() {
-  if (!config->enabled || radioIdleStopped.load(std::memory_order_relaxed) ||
+  if (!port::compiledIn() || !config->enabled || radioIdleStopped.load(std::memory_order_relaxed) ||
       heldForBuild.load(std::memory_order_relaxed))
     return BuildRelease::NotHeld;
   settleStart();
@@ -623,7 +626,7 @@ void afterPaint() {
 bool holdsHeap() {
   // An enabled preference alone is configuration: only a radio that owns or is acquiring its
   // memory, or a book start refused for memory, keeps the book's background work parked.
-  return config->enabled && (busy() || readerStartDeferred.load(std::memory_order_relaxed));
+  return port::compiledIn() && config->enabled && (busy() || readerStartDeferred.load(std::memory_order_relaxed));
 }
 
 Status status() {
@@ -641,6 +644,7 @@ Status status() {
 }
 
 Why why() {
+  if (!port::compiledIn()) return Why::Off;
   const bool running = port::running();
   RadioInputs in = inputsFor(running ? Phase::Running : Phase::Idle, lastScene);
   in.linked = port::connected();
@@ -651,7 +655,7 @@ LinkNote linkNote() { return linkNoteNow.load(std::memory_order_relaxed); }
 
 void acknowledgeLinkNote() { stepLinkNote(false, true); }
 
-bool switchOn() { return startSync(); }
+bool switchOn() { return port::compiledIn() && startSync(); }
 
 bool switchOff() {
   radioIdleStopped.store(false, std::memory_order_relaxed);
