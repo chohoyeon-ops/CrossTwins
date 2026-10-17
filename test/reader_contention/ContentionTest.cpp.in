@@ -38,6 +38,7 @@ struct Section {
   bool isBuildComplete() const { return !building; }
 };
 #define LOG_ERR(...) ((void)0)
+namespace bleturner { bool resident = false; bool holdsHeap() { return resident; } }
 class EpubReaderActivity {
  public:
   enum class Overlay { None, Toolbar };
@@ -46,6 +47,7 @@ class EpubReaderActivity {
   std::atomic<bool> pageBufferStale{false};
   std::unique_ptr<Section> section;
   bool buildHeapPaused = false, heapAllowed = true;
+  std::atomic<bool> radioReleasedForBuild{false};
   int updates = 0;
   static constexpr int BUILD_WINDOW_AHEAD = 3, BACKGROUND_BUILD_PAGES_PER_TICK = 2;
   bool backgroundBuildWanted() const;
@@ -162,4 +164,17 @@ TEST(ReaderContention, OpenOverlaySuppressesBackgroundLoanAndBusyHint) {
   EXPECT_FALSE(reader.pageBufferStale);
   RenderLock lock;
   EXPECT_FALSE(reader.skipLoopDelay());
+}
+
+TEST(ReaderContention, RadioAndChapterBuildNeverShareHeap) {
+  EpubReaderActivity reader;
+  reader.section = std::make_unique<Section>();
+  bleturner::resident = true;
+  reader.tick();
+  EXPECT_EQ(reader.section->pageCount, 0);
+  bleturner::resident = false;
+  reader.section->pageCount = 100;
+  reader.radioReleasedForBuild = true;
+  reader.tick();
+  EXPECT_EQ(reader.section->pageCount, 101);
 }

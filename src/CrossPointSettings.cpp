@@ -1,5 +1,6 @@
 #include "CrossPointSettings.h"
 
+#include <BlePageTurnerJson.h>
 #include <I18n.h>
 #include <Logging.h>
 #include <ObfuscationUtils.h>
@@ -114,6 +115,7 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
     doc["keyboardLayouts"] = keyboardLayouts;
   }
   doc["slideshowIntervalSeconds"] = slideshowIntervalSeconds;
+  bleturner::writeJson(ble, doc);
 }
 
 bool CrossPointSettings::fromJson(JsonVariantConst doc) {
@@ -280,6 +282,8 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
     slideshowIntervalSeconds = static_cast<uint16_t>(std::clamp(saved, static_cast<int>(MIN_SLIDESHOW_INTERVAL_SECONDS),
                                                                 static_cast<int>(MAX_SLIDESHOW_INTERVAL_SECONDS)));
   }
+
+  if (!bleturner::readJson(ble, doc)) needsResave = true;
 
   if (needsResave) {
     LOG_DBG("CPS", "Resaving settings to update format");

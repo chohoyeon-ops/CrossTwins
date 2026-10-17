@@ -26,6 +26,7 @@ enum class Action : uint8_t {
   SYNC,
   DELETE_CACHE,
   DICTIONARY,
+  BLUETOOTH,
   Count
 };
 

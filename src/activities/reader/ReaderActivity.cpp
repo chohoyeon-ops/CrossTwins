@@ -1,5 +1,6 @@
 #include "ReaderActivity.h"
 
+#include <BlePageTurner.h>
 #include <FontCacheManager.h>
 #include <FsHelpers.h>
 #include <HalStorage.h>
@@ -206,6 +207,7 @@ void ReaderActivity::loop() {
 }
 
 void ReaderActivity::render(RenderLock&&) {
+  bleturner::settleStart();
   if (isAtEndOfBook()) {
     if (!endOfBookOptions) {
       endOfBookOptions = makeUniqueNoThrow<EndOfBookOptions>(renderer);
