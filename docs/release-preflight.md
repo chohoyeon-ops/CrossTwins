@@ -13,7 +13,7 @@ CI 변경을 포함한 새 커밋의 full SHA로 dispatch한다. workflow 실행
 `release_tag=v1.6.5-ct.3`, `prerelease=false`를 사용한다. canonical ct.3 이상의
 정식 CrossTwins 버전만 허용하며 ct.1/ct.2 재실행 입력은 거부한다.
 
-SDK gitlink는 `539da34db67a546cad961525d7e9b6364dfa2fe4`, 플랫폼은 기존
+SDK gitlink는 `0bbc42b84f568fa70b0e17d66a8609e4e7fc4b44`, 플랫폼은 기존
 pioarduino 55.03.311로 고정한다. 이를 바꾸려면 별도의 계약 검토가 필요하다.
 
 ## DAG와 실패 경계
