@@ -1,0 +1,230 @@
+name: Compile Release (publish)
+
+# Tag-driven release that builds every board and publishes the assets, so X4 Pro and
+# the other S3 boards get images next to X3/X4. release.yml stays the no-publication
+# preflight.
+#
+# Tags:
+#   v<platformio version>-ct.<N>            regular release
+#   v<platformio version>-ct.<N>-<short sha> test build of that commit (pre-release)
+# The firmware reports <version>-ct.<N>+<sha> (the *_rc envs) either way.
+#
+# Assets per board (device = x3-x4 | sticky | x4pro | x4c | papermono):
+#   crosspoint-<ver>-<device>.bin      - app image (OTA slot / SD update; the name OTA looks up)
+#   CrossPoint-<tag>-<device>-full.bin - merged full-flash image (bootloader+partitions+app)
+# X3/X4 also: firmware.bin, bootloader.bin, partitions.bin
+
+on:
+  push:
+    tags:
+      - 'v*-ct.*'
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      suffix: ${{ steps.v.outputs.suffix }}
+      sha: ${{ steps.v.outputs.sha }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+      notes: ${{ steps.v.outputs.notes }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: v
+        run: |
+          set -euo pipefail
+          base="$(sed -n 's/^version = //p' platformio.ini | head -n1)"
+          sha="$(git rev-parse --short=7 HEAD)"
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-ct\.([1-9][0-9]*)(-([0-9a-f]{7}))?$ ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME must look like v${base}-ct.N or v${base}-ct.N-${sha}"
+            exit 1
+          fi
+          if [ "${BASH_REMATCH[1]}" != "$base" ]; then
+            echo "::error::Tag version ${BASH_REMATCH[1]} does not match platformio.ini $base"
+            exit 1
+          fi
+          prerelease=false
+          if [ -n "${BASH_REMATCH[4]}" ]; then
+            if [ "${BASH_REMATCH[4]}" != "$sha" ]; then
+              echo "::error::Tag SHA ${BASH_REMATCH[4]} does not match the tagged commit $sha"
+              exit 1
+            fi
+            prerelease=true
+          fi
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "notes=docs/release-notes/v${base}-ct.${BASH_REMATCH[2]}.ko.md" >> "$GITHUB_OUTPUT"
+          echo "suffix=-ct.${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "### firmware version ${base}-ct.${BASH_REMATCH[2]}+${sha}" >> "$GITHUB_STEP_SUMMARY"
+
+  build-release:
+    needs: version
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - release_env: gh_release_rc
+            device: x3-x4
+            chip: esp32c3
+          - release_env: sticky-gh_release_rc
+            device: sticky
+            chip: esp32s3
+          - release_env: x4pro-gh_release_rc
+            device: x4pro
+            chip: esp32s3
+          - release_env: x4c-gh_release_rc
+            device: x4c
+            chip: esp32s3
+          - release_env: papermono-gh_release_rc
+            device: papermono
+            chip: esp32s3
+    env:
+      PIO_ENV: ${{ matrix.release_env }}
+      BUILD_DIR: .pio/build/${{ matrix.release_env }}
+      CROSSPOINT_RC_SUFFIX: ${{ needs.version.outputs.suffix }}
+      CROSSPOINT_RC_HASH: ${{ needs.version.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.platformio/.cache
+          key: ${{ runner.os }}-pio-${{ matrix.release_env }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: false
+
+      - name: Install PlatformIO Core
+        run: |
+          uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip esptool
+          # platform-espressif32's builder/main.py imports these unconditionally; its own
+          # penv bootstrap does not pick them up reliably on hosted runners.
+          uv pip install --system -U "littlefs-python>=0.16.0" "fatfs-ng>=0.1.14" "pyyaml>=6.0.2" \
+            "rich-click>=1.8.6" "zopfli>=0.2.2" "intelhex>=2.3.0" "rich>=14.0.0" "urllib3<2" \
+            "cryptography>=45.0.3" "certifi>=2025.8.3" "ecdsa>=0.19.1" "bitstring>=4.3.1" \
+            "reedsolo>=1.5.3,<1.8" "esp-idf-size>=2.0.0" "esp-coredump>=1.14.0"
+
+      - name: Pin pioarduino core inside the platform penv
+        run: |
+          set -euo pipefail
+          # Envs with custom_sdkconfig run a nested `pio run` from ~/.platformio/penv.
+          # Keep that core on the same version as the outer one.
+          pio pkg install -e "$PIO_ENV"
+          uv pip install --python ~/.platformio/penv/bin/python "pioarduino==6.1.19"
+
+      - name: Build
+        run: pio run -e "$PIO_ENV" -j1
+
+      - name: Check firmware fits the OTA partition
+        run: |
+          size=$(stat -c %s "$BUILD_DIR/firmware.bin")
+          limit=$((0x640000))
+          echo "${{ matrix.device }} firmware.bin: $size bytes (limit $limit)"
+          if [ "$size" -gt "$limit" ]; then
+            echo "::error::${{ matrix.device }} firmware.bin ($size) exceeds the OTA partition ($limit)"
+            exit 1
+          fi
+
+      - name: Prepare assets
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          cp "$BUILD_DIR/firmware.bin" "dist/crosspoint-${version}-${{ matrix.device }}.bin"
+          esptool.py --chip ${{ matrix.chip }} merge_bin \
+            -o "dist/CrossPoint-${GITHUB_REF_NAME}-${{ matrix.device }}-full.bin" \
+            --flash_mode dio \
+            --flash_freq 80m \
+            --flash_size 16MB \
+            0x0 "$BUILD_DIR/bootloader.bin" \
+            0x8000 "$BUILD_DIR/partitions.bin" \
+            0x10000 "$BUILD_DIR/firmware.bin"
+          if [ "${{ matrix.device }}" = "x3-x4" ]; then
+            cp "$BUILD_DIR/firmware.bin" dist/firmware.bin
+            cp "$BUILD_DIR/bootloader.bin" "$BUILD_DIR/partitions.bin" dist/
+          fi
+          ls -l dist
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-${{ matrix.device }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: debug-${{ matrix.device }}
+          path: |
+            ${{ env.BUILD_DIR }}/firmware.elf
+            ${{ env.BUILD_DIR }}/firmware.map
+
+  publish-release:
+    needs: [version, build-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v6
+        with:
+          path: dist
+          pattern: release-*
+          merge-multiple: true
+
+      - name: Verify assets
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          for device in x3-x4 sticky x4pro x4c papermono; do
+            test -f "dist/crosspoint-${version}-${device}.bin"
+            test -f "dist/CrossPoint-${GITHUB_REF_NAME}-${device}-full.bin"
+          done
+          for f in firmware.bin bootloader.bin partitions.bin; do
+            test -f "dist/$f"
+          done
+          # GitHub compares asset names case-insensitively.
+          dupes=$(find dist -maxdepth 1 -type f -printf '%f\n' | tr '[:upper:]' '[:lower:]' | sort | uniq -d)
+          if [ -n "$dupes" ]; then
+            echo "::error::Asset names collide case-insensitively: $dupes"
+            exit 1
+          fi
+          (cd dist && sha256sum * > SHA256SUMS)
+          ls -l dist
+
+      - name: Resolve release notes
+        id: notes
+        run: |
+          NOTES="${{ needs.version.outputs.notes }}"
+          if [[ -f "$NOTES" ]]; then
+            echo "path=$NOTES" >> "$GITHUB_OUTPUT"
+            echo "generate=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::No release notes at $NOTES; using generated notes."
+            echo "path=" >> "$GITHUB_OUTPUT"
+            echo "generate=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          body_path: ${{ steps.notes.outputs.path }}
+          generate_release_notes: ${{ steps.notes.outputs.generate }}
+          draft: false
+          prerelease: ${{ needs.version.outputs.prerelease == 'true' }}
