@@ -62,6 +62,16 @@ class PreflightContracts(unittest.TestCase):
         self.assertEqual(current["firmware_suffix"], "-ct.5")
         self.assertEqual(current["firmware_version"], f"1.6.5-ct.5+{SHA[:7]}")
 
+    def test_sdk_pin_matches_gitlink_and_rejects_previous_revision(self):
+        root = Path(__file__).resolve().parents[1]
+        link = subprocess.check_output(["git", "ls-tree", "HEAD", "freeink-sdk"],
+                                       cwd=root, text=True).split()
+        self.assertEqual(link[:2], ["160000", "commit"])
+        self.assertEqual(SDK_SHA, link[2])
+        with self.assertRaisesRegex(ValueError, "SDK gitlink differs from approved revision"):
+            context(REPOSITORY, "v1.6.5-ct.5", SHA, SHA,
+                    "539da34db67a546cad961525d7e9b6364dfa2fe4", "1.6.5", "1", "1")
+
     def test_invalid_and_historical_inputs(self):
         for tag in ("v1.6.5-ct.1", "v1.6.5-ct.2", "1.6.5-ct.3", "v1.6.5-ct.03",
                     "v1.6.5", "v1.6.5-ct.3;echo bad", "v1.6.4-ct.3"):
