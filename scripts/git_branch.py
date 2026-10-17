@@ -80,14 +80,21 @@ def get_base_version(project_dir):
 def inject_version(env):
     # Only applies to development environments; release envs set the
     # version via build_flags in platformio.ini and are unaffected.
-    if env['PIOENV'] not in ('default', 'sticky'):
+    if env['PIOENV'] not in ('default', 'default_ble_off', 'sticky'):
         return
 
     project_dir = env['PROJECT_DIR']
     base_version = get_base_version(project_dir)
     branch = get_git_branch(project_dir)
     short_sha = get_git_short_sha(project_dir)
-    version_string = f'{base_version}-dev-{branch}-{short_sha}'
+    # IDF's descriptor has 32 bytes including NUL. Preserve the source SHA when
+    # an experiment branch name exceeds the remaining UTF-8 byte budget.
+    prefix, suffix = f'{base_version}-dev-', f'-{short_sha}'
+    budget = 31 - len((prefix + suffix).encode('utf-8'))
+    branch_label = branch.encode('utf-8')[:max(0, budget)].decode('utf-8', errors='ignore')
+    version_string = f'{prefix}{branch_label}{suffix}'
+    if len(version_string.encode('utf-8')) > 31:
+        raise ValueError('Development base version and SHA exceed the IDF descriptor')
     display_version_string = f'CrossTwins-{base_version}-dev'
 
     env.Append(CPPDEFINES=[
